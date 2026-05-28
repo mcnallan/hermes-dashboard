@@ -9,6 +9,7 @@ const SOCKET_PATH = '/tmp/hermes-dashboard.sock'
 const WS_PORT = 3001
 const HTTP_PORT = 3002
 const HERMES_HOME = process.env.HERMES_HOME || join(homedir(), '.hermes')
+const MAX_WEBHOOK_BYTES = 1_000_000
 
 // =========================================================================
 // Dashboard state
@@ -147,6 +148,48 @@ function processEvent(payload: Record<string, unknown>) {
   broadcast()
 }
 
+function processWebhookBody(body: string) {
+  const trimmed = body.trim()
+  if (!trimmed) return 0
+
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(trimmed) as unknown
+  } catch {
+    parsed = trimmed.split('\n').map(line => JSON.parse(line) as unknown)
+  }
+
+  const events = Array.isArray(parsed)
+    ? parsed
+    : typeof parsed === 'object' && parsed !== null && Array.isArray((parsed as Record<string, unknown>).events)
+      ? (parsed as Record<string, unknown>).events
+      : [parsed]
+
+  let count = 0
+  for (const event of events) {
+    if (typeof event !== 'object' || event === null) continue
+    processEvent(event as Record<string, unknown>)
+    count++
+  }
+  return count
+}
+
+function readJsonBody(req: IncomingMessage): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let body = ''
+    req.setEncoding('utf8')
+    req.on('data', (chunk) => {
+      body += chunk
+      if (body.length > MAX_WEBHOOK_BYTES) {
+        reject(new Error('payload too large'))
+        req.destroy()
+      }
+    })
+    req.on('end', () => resolve(body))
+    req.on('error', reject)
+  })
+}
+
 function pushActivity(s: Session, type: ActivityEntry['type'], content: string, color: string) {
   activity.unshift({ id: `e${++counter}`, sessionId: s.sessionId, agentTitle: s.firstUserMessage?.slice(0, 40) || s.agent, type, content, timestamp: new Date(), color })
   if (activity.length > 100) activity.length = 100
@@ -276,14 +319,33 @@ function wikiHandler(url: string): unknown {
 
 const ALLOWED_ORIGINS = ['http://localhost:5173', 'http://127.0.0.1:5173']
 
-const httpServer = createHttpServer((req: IncomingMessage, res: ServerResponse) => {
+const httpServer = createHttpServer(async (req: IncomingMessage, res: ServerResponse) => {
   const origin = req.headers.origin || ''
   if (ALLOWED_ORIGINS.includes(origin)) {
     res.setHeader('Access-Control-Allow-Origin', origin)
   }
-  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS')
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
   res.setHeader('Content-Type', 'application/json')
   if (req.method === 'OPTIONS') { res.end(); return }
+
+  if (req.method === 'POST' && (req.url === '/api/webhook' || req.url === '/api/events')) {
+    try {
+      const count = processWebhookBody(await readJsonBody(req))
+      res.end(JSON.stringify({ ok: true, events: count }))
+    } catch (err) {
+      res.statusCode = err instanceof Error && err.message === 'payload too large' ? 413 : 400
+      res.end(JSON.stringify({ ok: false, error: err instanceof Error ? err.message : 'invalid payload' }))
+    }
+    return
+  }
+
+  if (req.method !== 'GET') {
+    res.statusCode = 405
+    res.end(JSON.stringify({ error: 'method not allowed' }))
+    return
+  }
+
   const data = wikiHandler(req.url || '/')
   if (data === null) { res.statusCode = 404; res.end(JSON.stringify({ error: 'not found' })); return }
   res.end(JSON.stringify(data))

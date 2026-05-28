@@ -19,12 +19,15 @@ import socket
 import subprocess
 import sys
 import uuid
+from urllib import request
+from urllib.error import URLError
 from collections import defaultdict
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 SOCKET_PATH = "/tmp/hermes-dashboard.sock"
+WEBHOOK_URL = os.environ.get("HERMES_DASHBOARD_WEBHOOK_URL", "http://127.0.0.1:3002/api/webhook")
 AGENT_NAME = os.environ.get("HERMES_AGENT_NAME", "agent")
 _TOOL_CALL_IDS = defaultdict(list)
 _CURRENT_SESSION_ID = None
@@ -63,11 +66,25 @@ def _base_payload(event_name, session_id, status, **extra):
 
 
 def _send(payload):
+    data = json.dumps(payload).encode("utf-8")
+    try:
+        req = request.Request(
+            WEBHOOK_URL,
+            data=data,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        request.urlopen(req, timeout=1.0).close()
+        return
+    except (URLError, TimeoutError, OSError):
+        pass
+    except Exception as exc:
+        logger.debug("hermes-dashboard: webhook send failed: %s", exc)
+
     try:
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         sock.settimeout(1.0)
         sock.connect(SOCKET_PATH)
-        data = json.dumps(payload).encode("utf-8")
         sock.sendall(data + b"\n")
         sock.close()
     except (ConnectionRefusedError, FileNotFoundError, OSError):
@@ -168,7 +185,7 @@ def _on_pre_llm_call(session_id="", user_message="", platform="", **kwargs):
     _send(_base_payload(
         "UserPromptSubmit", session_id, "processing",
         agent=AGENT_NAME, platform=platform or "cli",
-        message=(user_message or "")[:120],
+        message=user_message or "",
     ))
 
 
@@ -176,10 +193,9 @@ def _on_post_llm_call(session_id="", assistant_response="", **kwargs):
     global _CURRENT_SESSION_ID
     if session_id:
         _CURRENT_SESSION_ID = session_id
-    summary = (assistant_response or "")[:80].replace("\n", " ")
     _send(_base_payload(
         "Notification", session_id, "processing",
-        notification_type="assistant_response", agent=AGENT_NAME, message=summary,
+        notification_type="assistant_response", agent=AGENT_NAME, message=assistant_response or "",
     ))
 
 

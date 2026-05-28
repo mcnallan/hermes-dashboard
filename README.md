@@ -56,12 +56,12 @@ Hermes Agent
 hermes_dashboard plugin (hooks into session lifecycle)
   |
   v
-Unix socket (/tmp/hermes-dashboard.sock)
+HTTP webhook (POST /api/webhook)
   |
   v
 Bridge server (Node.js)
   ├── WebSocket :3001 --> React dashboard (live updates)
-  └── HTTP :3002 ------> Wiki API (reads ~/.hermes/)
+  └── HTTP :3002 ------> Webhook ingestion + Wiki API (reads ~/.hermes/)
   |
   v
 Browser at localhost:5173
@@ -84,13 +84,14 @@ Browser at localhost:5173
 | `HERMES_HOME` | `~/.hermes` | Hermes installation directory |
 | `HERMES_DASHBOARD_DIR` | auto-detected | Path to this repo (for plugin auto-start) |
 | `HERMES_AGENT_NAME` | `agent` | Agent name shown in dashboard |
+| `HERMES_DASHBOARD_WEBHOOK_URL` | `http://127.0.0.1:3002/api/webhook` | Dashboard event webhook endpoint |
 
 ## Stack
 
 - **Frontend**: React 19, TypeScript, Vite, marked (markdown)
-- **Server**: Node.js, ws (WebSocket), Unix domain sockets
+- **Server**: Node.js, ws (WebSocket), HTTP webhook ingestion, Unix socket fallback
 - **Plugin**: Python (Hermes hook system)
-- **Styling**: Custom CSS, dark theme, monospace typography
+- **Styling**: Custom CSS, light/dark themes, monospace typography
 
 ## License
 

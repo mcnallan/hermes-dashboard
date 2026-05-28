@@ -9,19 +9,29 @@ import { ToolBreakdown } from './components/ToolBreakdown'
 import { ActivityFeed } from './components/ActivityFeed'
 import { SessionTimeline } from './components/SessionTimeline'
 import { Wiki } from './components/Wiki'
-import { Farzapedia } from './components/Farzapedia'
 import './app.css'
+
+type Theme = 'light' | 'dark'
 
 export default function App() {
   const { agents, activityFeed, connected } = useHermes()
   const [selected, setSelected] = useState<Agent | null>(null)
   const [now, setNow] = useState(() => Date.now())
-  const [view, setView] = useState<'dashboard' | 'wiki' | 'farzapedia'>('dashboard')
+  const [view, setView] = useState<'dashboard' | 'wiki'>('dashboard')
+  const [theme, setTheme] = useState<Theme>(() => {
+    const stored = window.localStorage.getItem('hermes-theme')
+    return stored === 'dark' ? 'dark' : 'light'
+  })
 
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), 1000)
     return () => clearInterval(id)
   }, [])
+
+  useEffect(() => {
+    document.body.dataset.theme = theme
+    window.localStorage.setItem('hermes-theme', theme)
+  }, [theme])
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -39,21 +49,19 @@ export default function App() {
     )
   }
 
-  if (view === 'farzapedia') {
-    return (
-      <div className="app">
-        <Farzapedia onBack={() => setView('dashboard')} />
-      </div>
-    )
-  }
-
   const selectedAgent = selected
     ? agents.find(a => a.sessionId === selected.sessionId) || null
     : null
 
   return (
-    <div className="app" key={now}>
-      <Header agents={agents} connected={connected} onWiki={() => setView('wiki')} onFarzapedia={() => setView('farzapedia')} />
+    <div className="app">
+      <Header
+        agents={agents}
+        connected={connected}
+        theme={theme}
+        onThemeToggle={() => setTheme(theme === 'light' ? 'dark' : 'light')}
+        onWiki={() => setView('wiki')}
+      />
       <HeroSection agents={agents} />
       <AttentionBanner agents={agents} />
 
