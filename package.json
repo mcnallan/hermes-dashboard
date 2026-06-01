@@ -10,7 +10,7 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "plugin:install": "mkdir -p ~/.hermes/plugins/hermes_dashboard && cp plugin/__init__.py ~/.hermes/plugins/hermes_dashboard/__init__.py"
+    "plugin:install": "mkdir -p ~/.hermes/plugins/hermes_dashboard && cp plugin/__init__.py ~/.hermes/plugins/hermes_dashboard/__init__.py && cp plugin/plugin.yaml ~/.hermes/plugins/hermes_dashboard/plugin.yaml"
   },
   "dependencies": {
     "dompurify": "^3.3.3",

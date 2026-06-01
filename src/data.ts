@@ -47,6 +47,15 @@ export interface Agent {
   approvalStatus?: 'pending' | 'submitted' | 'approved' | 'denied' | 'timeout' | 'error'
   approvalError?: string
   tokenCount: number
+  inputTokens?: number
+  outputTokens?: number
+  cacheReadTokens?: number
+  cacheWriteTokens?: number
+  reasoningTokens?: number
+  contextTokenCount?: number
+  apiCallCount?: number
+  model?: string
+  provider?: string
   maxTokens: number
   turnCount: number
   filesModified: number

@@ -46,6 +46,18 @@ interface PendingApproval {
   error?: string
 }
 
+interface UsageState {
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  cacheWriteTokens: number
+  reasoningTokens: number
+  promptTokens: number
+  totalTokens: number
+  apiCallCount: number
+  estimatedCostUsd: number
+}
+
 interface Session {
   sessionId: string
   agent: string
@@ -64,11 +76,29 @@ interface Session {
   filesModified: Set<string>
   firstUserMessage?: string
   pendingApproval?: PendingApproval
+  usage: UsageState
+  model?: string
+  provider?: string
 }
 
 const sessions = new Map<string, Session>()
 const activity: ActivityEntry[] = []
+const approvalSessions = new Map<string, string>()
 let counter = 0
+
+function emptyUsage(): UsageState {
+  return {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    reasoningTokens: 0,
+    promptTokens: 0,
+    totalTokens: 0,
+    apiCallCount: 0,
+    estimatedCostUsd: 0,
+  }
+}
 
 function getOrCreateSession(sessionId: string, payload: Record<string, unknown>): Session {
   let s = sessions.get(sessionId)
@@ -88,10 +118,98 @@ function getOrCreateSession(sessionId: string, payload: Record<string, unknown>)
       recentTools: [],
       turnCount: 0,
       filesModified: new Set(),
+      usage: emptyUsage(),
     }
     sessions.set(sessionId, s)
   }
   return s
+}
+
+function sameRuntime(a: Session, payload: Record<string, unknown>): boolean {
+  const pid = numberValue(payload.pid)
+  const tty = String(payload.tty || '')
+  const cwd = String(payload.cwd || '')
+  if (pid && a.pid && pid !== a.pid) return false
+  if (tty && a.tty && tty !== a.tty) return false
+  if (cwd && a.cwd && cwd !== a.cwd) return false
+  return Boolean(pid || tty || cwd)
+}
+
+function isPlaceholderSession(s: Session): boolean {
+  return !s.firstUserMessage && s.agent === 'agent' && !s.lastMessage
+}
+
+function relatedRealSession(incomingId: string, payload: Record<string, unknown>): Session | null {
+  for (const session of sessions.values()) {
+    if (session.sessionId === incomingId) continue
+    if (!sameRuntime(session, payload)) continue
+    if (session.firstUserMessage || session.lastMessageRole === 'user') return session
+  }
+  return null
+}
+
+function dropRelatedPlaceholders(target: Session, payload: Record<string, unknown>) {
+  if (!target.firstUserMessage) return
+  for (const session of sessions.values()) {
+    if (session.sessionId === target.sessionId) continue
+    if (!isPlaceholderSession(session)) continue
+    if (!sameRuntime(session, payload)) continue
+    sessions.delete(session.sessionId)
+  }
+}
+
+function numberValue(value: unknown): number {
+  const n = typeof value === 'number' ? value : Number(value)
+  return Number.isFinite(n) ? n : 0
+}
+
+function usageFromPayload(value: unknown): UsageState {
+  const u = value && typeof value === 'object' ? value as Record<string, unknown> : {}
+  const inputTokens = numberValue(u.input_tokens ?? u.inputTokens ?? u.prompt_tokens)
+  const outputTokens = numberValue(u.output_tokens ?? u.outputTokens ?? u.completion_tokens)
+  const cacheReadTokens = numberValue(u.cache_read_tokens ?? u.cacheReadTokens ?? u.cache_read_input_tokens)
+  const cacheWriteTokens = numberValue(u.cache_write_tokens ?? u.cacheWriteTokens ?? u.cache_creation_input_tokens)
+  const reasoningTokens = numberValue(u.reasoning_tokens ?? u.reasoningTokens)
+  const promptTokens = numberValue(u.prompt_tokens ?? u.promptTokens) || inputTokens + cacheReadTokens + cacheWriteTokens
+  const totalTokens = numberValue(u.total_tokens ?? u.totalTokens) || promptTokens + outputTokens
+  return {
+    inputTokens,
+    outputTokens,
+    cacheReadTokens,
+    cacheWriteTokens,
+    reasoningTokens,
+    promptTokens,
+    totalTokens,
+    apiCallCount: numberValue(u.api_call_count ?? u.apiCallCount),
+    estimatedCostUsd: numberValue(u.estimated_cost_usd ?? u.estimatedCostUsd),
+  }
+}
+
+function applyUsageEvent(s: Session, payload: Record<string, unknown>) {
+  if (payload.model) s.model = String(payload.model)
+  if (payload.provider) s.provider = String(payload.provider)
+
+  const absolute = usageFromPayload(payload.session_usage)
+  if (absolute.totalTokens > 0 || absolute.apiCallCount > 0) {
+    s.usage = {
+      ...absolute,
+      apiCallCount: absolute.apiCallCount || numberValue(payload.api_call_count) || s.usage.apiCallCount,
+      estimatedCostUsd: absolute.estimatedCostUsd || s.usage.estimatedCostUsd,
+    }
+    return
+  }
+
+  const delta = usageFromPayload(payload.usage)
+  if (delta.totalTokens <= 0) return
+  s.usage.inputTokens += delta.inputTokens
+  s.usage.outputTokens += delta.outputTokens
+  s.usage.cacheReadTokens += delta.cacheReadTokens
+  s.usage.cacheWriteTokens += delta.cacheWriteTokens
+  s.usage.reasoningTokens += delta.reasoningTokens
+  s.usage.promptTokens += delta.promptTokens
+  s.usage.totalTokens += delta.totalTokens
+  s.usage.apiCallCount += 1
+  s.usage.estimatedCostUsd += numberValue(payload.estimated_cost_usd ?? delta.estimatedCostUsd)
 }
 
 function toolInputSummary(tool: string, input: unknown): string {
@@ -119,16 +237,31 @@ function approvalContent(payload: Record<string, unknown>): string {
   return command || description || 'approval requested'
 }
 
+function sessionForApproval(approvalId: string): Session | null {
+  if (!approvalId) return null
+  for (const session of sessions.values()) {
+    if (session.pendingApproval?.id === approvalId) return session
+  }
+  const sessionId = approvalSessions.get(approvalId)
+  if (sessionId) return sessions.get(sessionId) || null
+  return null
+}
+
 function processEvent(payload: Record<string, unknown>) {
-  const sessionId = payload.session_id as string
+  let sessionId = payload.session_id as string
   if (!sessionId) return
+  const event = payload.event as string
+  if (event === 'ApprovalDecisionSubmitted' || event === 'ApprovalResponse') {
+    sessionId = sessionForApproval(String(payload.approval_id || ''))?.sessionId || sessionId
+  } else if (event === 'ApprovalRequest') {
+    sessionId = relatedRealSession(sessionId, payload)?.sessionId || sessionId
+  }
   const s = getOrCreateSession(sessionId, payload)
   s.lastActivity = new Date()
   if (payload.cwd) s.cwd = payload.cwd as string
   if (payload.pid) s.pid = payload.pid as number
   if (payload.tty) s.tty = payload.tty as string
   if (payload.agent) s.agent = payload.agent as string
-  const event = payload.event as string
   switch (event) {
     case 'SessionStart': { s.phase = 'waiting_for_input'; pushActivity(s, 'phase', 'Session started', 'var(--success)'); break }
     case 'PreToolUse': {
@@ -161,6 +294,7 @@ function processEvent(payload: Record<string, unknown>) {
       s.phase = 'processing'; const msg = (payload.message as string) || ''
       s.lastMessage = msg; s.lastMessageRole = 'user'; s.turnCount++
       if (!s.firstUserMessage && msg) s.firstUserMessage = msg
+      dropRelatedPlaceholders(s, payload)
       break
     }
     case 'Notification': {
@@ -176,6 +310,8 @@ function processEvent(payload: Record<string, unknown>) {
       const command = String(payload.command || '')
       const description = String(payload.description || '')
       if (!approvalId) break
+      approvalSessions.set(approvalId, s.sessionId)
+      dropRelatedPlaceholders(s, payload)
       s.phase = 'waiting_for_approval'
       s.pendingApproval = {
         id: approvalId,
@@ -210,6 +346,10 @@ function processEvent(payload: Record<string, unknown>) {
       }
       if (s.phase === 'waiting_for_approval') s.phase = 'processing'
       pushActivity(s, 'approval', `approval ${status}: ${approvalContent(payload)}`, status === 'approved' ? 'var(--success)' : 'var(--accent)')
+      break
+    }
+    case 'LlmUsage': {
+      applyUsageEvent(s, payload)
       break
     }
     case 'SessionEnd': { s.phase = 'ended'; pushActivity(s, 'phase', 'Session ended', 'var(--text-disabled)'); break }
@@ -367,6 +507,12 @@ async function approvalHandler(req: IncomingMessage, res: ServerResponse, url: s
     return true
   }
 
+  const finalStatus = choice === 'deny' ? 'denied' : 'approved'
+  found.approval.status = finalStatus
+  found.session.pendingApproval = undefined
+  if (found.session.phase === 'waiting_for_approval') found.session.phase = 'processing'
+  pushActivity(found.session, 'approval', `approval ${finalStatus}: ${found.approval.command || found.approval.description || 'approval'}`, finalStatus === 'approved' ? 'var(--success)' : 'var(--accent)')
+  broadcast()
   sendJson(res, 200, { ok: true, approval_id: found.approval.id, choice })
   return true
 }
@@ -394,8 +540,20 @@ function serializeState(): string {
     approvalDescription: s.pendingApproval?.description,
     approvalStatus: s.pendingApproval?.status,
     approvalError: s.pendingApproval?.error,
-    subagents: [], tokenCount: 0, maxTokens: 1_000_000, turnCount: s.turnCount,
-    filesModified: s.filesModified.size, linesChanged: 0, costUsd: 0,
+    subagents: [],
+    tokenCount: s.usage.totalTokens,
+    inputTokens: s.usage.inputTokens,
+    outputTokens: s.usage.outputTokens,
+    cacheReadTokens: s.usage.cacheReadTokens,
+    cacheWriteTokens: s.usage.cacheWriteTokens,
+    reasoningTokens: s.usage.reasoningTokens,
+    contextTokenCount: s.usage.promptTokens,
+    apiCallCount: s.usage.apiCallCount,
+    model: s.model,
+    provider: s.provider,
+    maxTokens: 1_000_000,
+    turnCount: s.turnCount,
+    filesModified: s.filesModified.size, linesChanged: 0, costUsd: s.usage.estimatedCostUsd,
   }))
   return JSON.stringify({ type: 'state', agents, activityFeed: activity.slice(0, 50).map(e => ({ ...e, timestamp: e.timestamp.toISOString() })) })
 }

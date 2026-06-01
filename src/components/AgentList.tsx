@@ -127,7 +127,7 @@ export function AgentList({ agents, selected, onSelect }: Props) {
               </div>
 
               <div className="agent-card-row">
-                <ContextMini used={agent.tokenCount} max={agent.maxTokens} />
+                <ContextMini used={agent.contextTokenCount ?? agent.tokenCount} max={agent.maxTokens} />
                 <span className="agent-card-meta">
                   <span>${agent.costUsd.toFixed(2)}</span>
                 </span>

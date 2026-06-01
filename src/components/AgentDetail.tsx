@@ -40,7 +40,8 @@ function ContextRing({ used, max }: { used: number; max: number }) {
 }
 
 function ContextBar({ agent }: { agent: Agent }) {
-  const pct = agent.tokenCount / agent.maxTokens
+  const used = agent.contextTokenCount ?? agent.tokenCount
+  const pct = used / agent.maxTokens
   const totalSegments = 24
   const filled = Math.round(pct * totalSegments)
   const color = pct > 0.8 ? 'var(--accent)' : pct > 0.5 ? 'var(--warning)' : 'var(--text-display)'
@@ -49,7 +50,7 @@ function ContextBar({ agent }: { agent: Agent }) {
     <div className="context-bar">
       <div className="context-bar-header">
         <span className="context-bar-label">CONTEXT WINDOW</span>
-        <span className="context-bar-value">{formatTokens(agent.tokenCount)} / {formatTokens(agent.maxTokens)}</span>
+        <span className="context-bar-value">{formatTokens(used)} / {formatTokens(agent.maxTokens)}</span>
       </div>
       <div className="context-segments">
         {Array.from({ length: totalSegments }).map((_, i) => (
@@ -121,6 +122,8 @@ function approvalStatusLabel(agent: Agent) {
 export function AgentDetail({ agent, onClose, onApprovalDecision }: Props) {
   const approvalBusy = agent.approvalStatus === 'submitted'
   const approvalDisabled = approvalBusy || !agent.approvalId
+  const contextTokens = agent.contextTokenCount ?? agent.tokenCount
+  const cacheTokens = (agent.cacheReadTokens ?? 0) + (agent.cacheWriteTokens ?? 0)
 
   return (
     <div className="detail">
@@ -132,7 +135,7 @@ export function AgentDetail({ agent, onClose, onApprovalDecision }: Props) {
             <span className="agent-phase" style={{ color: phaseColor(agent.phase) }}>{phaseLabel(agent.phase)}</span>
           </div>
         </div>
-        <ContextRing used={agent.tokenCount} max={agent.maxTokens} />
+        <ContextRing used={contextTokens} max={agent.maxTokens} />
         <button className="detail-close" onClick={onClose}>ESC</button>
       </div>
 
@@ -140,6 +143,22 @@ export function AgentDetail({ agent, onClose, onApprovalDecision }: Props) {
         <div className="detail-metric">
           <span className="detail-metric-label">TOKENS</span>
           <span className="detail-metric-value">{formatTokens(agent.tokenCount)}</span>
+        </div>
+        <div className="detail-metric">
+          <span className="detail-metric-label">INPUT</span>
+          <span className="detail-metric-value">{formatTokens(agent.inputTokens ?? 0)}</span>
+        </div>
+        <div className="detail-metric">
+          <span className="detail-metric-label">OUTPUT</span>
+          <span className="detail-metric-value">{formatTokens(agent.outputTokens ?? 0)}</span>
+        </div>
+        <div className="detail-metric">
+          <span className="detail-metric-label">CACHE</span>
+          <span className="detail-metric-value">{formatTokens(cacheTokens)}</span>
+        </div>
+        <div className="detail-metric">
+          <span className="detail-metric-label">API CALLS</span>
+          <span className="detail-metric-value">{agent.apiCallCount ?? 0}</span>
         </div>
         <div className="detail-metric">
           <span className="detail-metric-label">TURNS</span>
@@ -166,8 +185,8 @@ export function AgentDetail({ agent, onClose, onApprovalDecision }: Props) {
           <span className="detail-metric-value">{agent.pid}</span>
         </div>
         <div className="detail-metric">
-          <span className="detail-metric-label">TMUX</span>
-          <span className="detail-metric-value">{agent.tmuxTarget}</span>
+          <span className="detail-metric-label">MODEL</span>
+          <span className="detail-metric-value small">{agent.model || agent.provider || 'n/a'}</span>
         </div>
       </div>
 

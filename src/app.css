@@ -569,6 +569,8 @@
 .detail-metric-value.small {
   font-size: 12px;
   color: var(--text-primary);
+  line-height: 1.25;
+  overflow-wrap: anywhere;
 }
 
 /* context bar (segmented) */
