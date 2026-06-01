@@ -119,5 +119,5 @@ export function useHermes() {
     }
   }, [])
 
-  return { agents, activityFeed, connected, respondToApproval, getSessionTranscript, sendSessionMessage }
+  return { agents, activityFeed, connected, isMockData: USE_MOCK_DATA, respondToApproval, getSessionTranscript, sendSessionMessage }
 }

@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { type Agent, type ChatEntry, type PendingApproval, formatDuration, phaseLabel } from '../data'
 
 interface Props {
@@ -7,6 +7,7 @@ interface Props {
   onLoadTranscript: (sessionId: string) => Promise<ChatEntry[]>
   onSendMessage: (sessionId: string, message: string) => Promise<void>
   onApprovalDecision: (approvalId: string, decision: 'approve' | 'deny') => Promise<void>
+  isMockData: boolean
 }
 
 function entryTime(entry: ChatEntry) {
@@ -306,11 +307,12 @@ function PendingApprovals({
   )
 }
 
-export function SessionChatModal({ agent, onClose, onLoadTranscript, onSendMessage, onApprovalDecision }: Props) {
+export function SessionChatModal({ agent, onClose, onLoadTranscript, onSendMessage, onApprovalDecision, isMockData }: Props) {
   const [entries, setEntries] = useState<ChatEntry[]>([])
   const [draft, setDraft] = useState('')
   const [loading, setLoading] = useState(true)
   const [sending, setSending] = useState(false)
+  const [streamingMock, setStreamingMock] = useState(false)
   const [error, setError] = useState('')
   const [modalHeight, setModalHeight] = useState<number | null>(null)
   const modalRef = useRef<HTMLDivElement | null>(null)
@@ -320,6 +322,9 @@ export function SessionChatModal({ agent, onClose, onLoadTranscript, onSendMessa
   const scrollerRef = useRef<HTMLDivElement | null>(null)
   const composerRef = useRef<HTMLDivElement | null>(null)
   const initialScrollSessionRef = useRef<string | null>(null)
+  const resizeTimerRef = useRef<ReturnType<typeof window.setTimeout> | null>(null)
+  const streamTimersRef = useRef<Array<ReturnType<typeof window.setTimeout>>>([])
+  const stickToBottomRef = useRef(true)
   const canSend = agent.phase !== 'ended'
 
   useEffect(() => {
@@ -327,6 +332,7 @@ export function SessionChatModal({ agent, onClose, onLoadTranscript, onSendMessa
     setLoading(true)
     setError('')
     initialScrollSessionRef.current = null
+    stickToBottomRef.current = true
     onLoadTranscript(agent.sessionId)
       .then(data => {
         if (cancelled) return
@@ -359,19 +365,25 @@ export function SessionChatModal({ agent, onClose, onLoadTranscript, onSendMessa
   useLayoutEffect(() => {
     const el = scrollerRef.current
     if (!el || loading || entries.length === 0) return
-    if (initialScrollSessionRef.current === agent.sessionId) return
-    el.scrollTop = el.scrollHeight
-    initialScrollSessionRef.current = agent.sessionId
+    if (initialScrollSessionRef.current !== agent.sessionId || stickToBottomRef.current) {
+      el.scrollTop = el.scrollHeight
+      initialScrollSessionRef.current = agent.sessionId
+    }
   }, [agent.sessionId, entries.length, loading])
 
   useEffect(() => {
     const el = scrollerRef.current
     if (!el) return
-    const distance = el.scrollHeight - el.scrollTop - el.clientHeight
-    if (distance < 240) el.scrollTop = el.scrollHeight
-  }, [entries])
+    const updateStickiness = () => {
+      const distance = el.scrollHeight - el.scrollTop - el.clientHeight
+      stickToBottomRef.current = distance < 240
+    }
+    updateStickiness()
+    el.addEventListener('scroll', updateStickiness, { passive: true })
+    return () => el.removeEventListener('scroll', updateStickiness)
+  }, [agent.sessionId])
 
-  useLayoutEffect(() => {
+  const computeModalHeight = useCallback(() => {
     const modal = modalRef.current
     const header = headerRef.current
     const approvals = approvalsRef.current
@@ -388,43 +400,162 @@ export function SessionChatModal({ agent, onClose, onLoadTranscript, onSendMessa
     const nextHeight = Math.round(Math.min(maxHeight, Math.max(560, naturalHeight * 1.1)))
 
     setModalHeight(prev => (prev === nextHeight ? prev : nextHeight))
-  }, [agent.sessionId, agent.phase, entries, loading, sending, error, draft])
+  }, [])
+
+  const scheduleModalResize = useCallback((delayMs = 120) => {
+    if (resizeTimerRef.current) window.clearTimeout(resizeTimerRef.current)
+    resizeTimerRef.current = window.setTimeout(() => {
+      resizeTimerRef.current = null
+      computeModalHeight()
+    }, delayMs)
+  }, [computeModalHeight])
+
+  useEffect(() => {
+    scheduleModalResize(entries.length > 0 ? 180 : 0)
+    return () => {
+      if (resizeTimerRef.current) {
+        window.clearTimeout(resizeTimerRef.current)
+        resizeTimerRef.current = null
+      }
+    }
+  }, [agent.sessionId, agent.phase, entries.length, loading, sending, error, draft, scheduleModalResize])
 
   useEffect(() => {
     const transcript = transcriptRef.current
     if (!transcript) return
 
-    const recompute = () => {
-      const modal = modalRef.current
-      const header = headerRef.current
-      const approvals = approvalsRef.current
-      const composer = composerRef.current
-      if (!modal || !header || !transcript || !composer) return
+    scheduleModalResize(0)
 
-      const maxHeight = window.innerHeight - 32
-      const naturalHeight =
-        header.offsetHeight +
-        (approvals?.offsetHeight ?? 0) +
-        transcript.scrollHeight +
-        composer.offsetHeight
-      const nextHeight = Math.round(Math.min(maxHeight, Math.max(560, naturalHeight * 1.1)))
-      setModalHeight(prev => (prev === nextHeight ? prev : nextHeight))
-    }
-
-    recompute()
-
-    const observer = new ResizeObserver(recompute)
+    const observer = new ResizeObserver(() => scheduleModalResize(180))
     observer.observe(transcript)
     if (headerRef.current) observer.observe(headerRef.current)
     if (approvalsRef.current) observer.observe(approvalsRef.current)
     if (composerRef.current) observer.observe(composerRef.current)
 
-    window.addEventListener('resize', recompute)
+    window.addEventListener('resize', computeModalHeight)
     return () => {
       observer.disconnect()
-      window.removeEventListener('resize', recompute)
+      window.removeEventListener('resize', computeModalHeight)
     }
-  }, [agent.sessionId, agent.phase, entries, loading, sending, error, draft])
+  }, [agent.sessionId, computeModalHeight, scheduleModalResize])
+
+  useEffect(() => {
+    return () => {
+      for (const timer of streamTimersRef.current) window.clearTimeout(timer)
+      streamTimersRef.current = []
+    }
+  }, [])
+
+  function startMockStream() {
+    if (streamingMock) return
+    setStreamingMock(true)
+    const startedAt = Date.now()
+    const event = (offsetMs: number, entry: Omit<ChatEntry, 'timestamp' | 'source'>) => {
+      const timer = window.setTimeout(() => {
+        setEntries(prev => mergeTranscriptEntries([
+          ...prev,
+          {
+            ...entry,
+            timestamp: new Date(startedAt + offsetMs),
+            source: 'live',
+          },
+        ]))
+      }, offsetMs)
+      streamTimersRef.current.push(timer)
+    }
+
+    const mockEntries: Array<[number, Omit<ChatEntry, 'timestamp' | 'source'>]> = [
+      [0, {
+        id: `mock-stream-${startedAt}-thinking-1`,
+        kind: 'message',
+        role: 'assistant',
+        content: 'I am checking the current worker shape before changing autoscaling.',
+        reasoning: 'Need deployment limits, current replicas, and any existing HPA so the recommendation does not fight the cluster state.',
+      }],
+      [520, {
+        id: `mock-stream-${startedAt}-tool-1`,
+        kind: 'tool_call',
+        role: 'assistant',
+        content: '{ "command": "kubectl get deploy worker -n production -o yaml" }',
+        toolCallId: `mock-tool-${startedAt}-1`,
+        toolName: 'terminal',
+        toolInput: { command: 'kubectl get deploy worker -n production -o yaml' },
+        toolStatus: 'success',
+      }],
+      [1040, {
+        id: `mock-stream-${startedAt}-result-1`,
+        kind: 'tool_result',
+        role: 'tool',
+        content: 'replicas: 3\nresources:\n  requests:\n    cpu: 500m\n    memory: 768Mi\n  limits:\n    cpu: "2"\n    memory: 2Gi',
+        toolCallId: `mock-tool-${startedAt}-1`,
+        toolName: 'terminal',
+        toolStatus: 'success',
+      }],
+      [1560, {
+        id: `mock-stream-${startedAt}-thinking-2`,
+        kind: 'message',
+        role: 'assistant',
+        content: 'The worker has sane CPU limits, so I can size the HPA around utilization instead of raw queue depth.',
+        reasoning: 'CPU autoscaling is available immediately. Queue-based scaling can come later through KEDA, but this change should stay focused.',
+      }],
+      [2180, {
+        id: `mock-stream-${startedAt}-tool-2`,
+        kind: 'tool_call',
+        role: 'assistant',
+        content: '{ "command": "kubectl get hpa worker -n production -o yaml || true" }',
+        toolCallId: `mock-tool-${startedAt}-2`,
+        toolName: 'terminal',
+        toolInput: { command: 'kubectl get hpa worker -n production -o yaml || true' },
+        toolStatus: 'success',
+      }],
+      [2780, {
+        id: `mock-stream-${startedAt}-result-2`,
+        kind: 'tool_result',
+        role: 'tool',
+        content: 'Error from server (NotFound): horizontalpodautoscalers.autoscaling "worker" not found',
+        toolCallId: `mock-tool-${startedAt}-2`,
+        toolName: 'terminal',
+        toolStatus: 'success',
+      }],
+      [3380, {
+        id: `mock-stream-${startedAt}-thinking-3`,
+        kind: 'message',
+        role: 'assistant',
+        content: 'No HPA exists yet. I am adding one with conservative min and max bounds.',
+        reasoning: 'Min replicas should match the current steady state. Max replicas needs room for bursts without letting a bad deploy overwhelm downstream services.',
+      }],
+      [4020, {
+        id: `mock-stream-${startedAt}-tool-3`,
+        kind: 'tool_call',
+        role: 'assistant',
+        content: '{ "command": "cat <<EOF > k8s/worker-hpa.yaml\\napiVersion: autoscaling/v2\\nkind: HorizontalPodAutoscaler\\nmetadata:\\n  name: worker\\n  namespace: production\\nspec:\\n  minReplicas: 3\\n  maxReplicas: 12\\nEOF" }',
+        toolCallId: `mock-tool-${startedAt}-3`,
+        toolName: 'terminal',
+        toolInput: { command: 'write k8s/worker-hpa.yaml' },
+        toolStatus: 'success',
+      }],
+      [4680, {
+        id: `mock-stream-${startedAt}-result-3`,
+        kind: 'tool_result',
+        role: 'tool',
+        content: 'wrote k8s/worker-hpa.yaml with CPU target utilization at 70%',
+        toolCallId: `mock-tool-${startedAt}-3`,
+        toolName: 'terminal',
+        toolStatus: 'success',
+      }],
+      [5320, {
+        id: `mock-stream-${startedAt}-done`,
+        kind: 'message',
+        role: 'assistant',
+        content: 'The mock autoscaler stream is complete. The modal should have resized smoothly as these transcript events arrived.',
+        reasoning: 'This final message verifies the largest non-tool bubble path after the tool entries have expanded the transcript.',
+      }],
+    ]
+
+    for (const [offsetMs, entry] of mockEntries) event(offsetMs, entry)
+    const doneTimer = window.setTimeout(() => setStreamingMock(false), 5900)
+    streamTimersRef.current.push(doneTimer)
+  }
 
   async function submit() {
     const message = draft.trim()
@@ -475,7 +606,19 @@ export function SessionChatModal({ agent, onClose, onLoadTranscript, onSendMessa
               <span>{formatDuration(Date.now() - agent.createdAt.getTime())}</span>
             </div>
           </div>
-          <button className="detail-close" onClick={onClose}>ESC</button>
+          <div className="chat-modal-actions">
+            {isMockData && (
+              <button
+                className="chat-test-stream"
+                type="button"
+                disabled={streamingMock}
+                onClick={startMockStream}
+              >
+                {streamingMock ? 'STREAMING' : 'TEST STREAM'}
+              </button>
+            )}
+            <button className="detail-close" onClick={onClose}>ESC</button>
+          </div>
         </div>
 
         <div ref={approvalsRef}>

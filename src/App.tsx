@@ -15,7 +15,7 @@ import './app.css'
 type Theme = 'light' | 'dark'
 
 export default function App() {
-  const { agents, activityFeed, connected, respondToApproval, getSessionTranscript, sendSessionMessage } = useHermes()
+  const { agents, activityFeed, connected, isMockData, respondToApproval, getSessionTranscript, sendSessionMessage } = useHermes()
   const [selected, setSelected] = useState<Agent | null>(null)
   const [chatAgentId, setChatAgentId] = useState<string | null>(null)
   const [now, setNow] = useState(() => Date.now())
@@ -98,6 +98,7 @@ export default function App() {
           onLoadTranscript={getSessionTranscript}
           onSendMessage={sendSessionMessage}
           onApprovalDecision={respondToApproval}
+          isMockData={isMockData}
         />
       )}
     </div>
