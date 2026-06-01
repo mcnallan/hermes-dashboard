@@ -290,6 +290,7 @@ function hasReasoning(entry: ChatEntry): boolean {
 }
 
 function sameTranscriptEntry(a: ChatEntry, b: ChatEntry): boolean {
+  if (a.id && b.id && a.id === b.id) return true
   if (a.kind !== b.kind || a.role !== b.role) return false
   if (a.toolCallId && b.toolCallId) return a.toolCallId === b.toolCallId
   if ((a.kind === 'tool_call' || a.kind === 'tool_result') && a.toolName && b.toolName) {
@@ -297,16 +298,23 @@ function sameTranscriptEntry(a: ChatEntry, b: ChatEntry): boolean {
   }
   if (a.kind !== 'message') return false
   const withinSameTurn = Math.abs(a.timestamp.getTime() - b.timestamp.getTime()) < 5 * 60_000
-  return withinSameTurn && normalizedContent(a.content) === normalizedContent(b.content)
+  const aContent = normalizedContent(a.content)
+  const bContent = normalizedContent(b.content)
+  if (withinSameTurn && aContent === bContent) return true
+  const closeStreamUpdate = Math.abs(a.timestamp.getTime() - b.timestamp.getTime()) < 10_000
+  return a.role === 'assistant' && closeStreamUpdate && Boolean(aContent && bContent) && (
+    aContent.startsWith(bContent) || bContent.startsWith(aContent)
+  )
 }
 
 function mergeTranscriptPair(existing: ChatEntry, incoming: ChatEntry): ChatEntry {
-  const preferIncoming = !hasReasoning(existing) && hasReasoning(incoming)
+  const incomingHasBetterContent = incoming.content.length > existing.content.length
+  const preferIncoming = (!hasReasoning(existing) && hasReasoning(incoming)) || incomingHasBetterContent
   const base = preferIncoming ? incoming : existing
   const other = preferIncoming ? existing : incoming
   return {
     ...base,
-    content: base.content || other.content,
+    content: base.content.length >= other.content.length ? base.content : other.content,
     toolCallId: base.toolCallId || other.toolCallId,
     toolName: base.toolName || other.toolName,
     toolInput: base.toolInput ?? other.toolInput,
@@ -419,43 +427,20 @@ function processEvent(payload: Record<string, unknown>) {
       if (notifType === 'assistant_delta') {
         const delta = (payload.message as string) || ''
         if (!delta) break
-        if (!s.streamingMessageId) {
-          s.streamingMessageId = `assistant-stream-${++counter}`
-          pushTranscript(s, {
-            id: s.streamingMessageId,
-            kind: 'message',
-            role: 'assistant',
-            content: delta,
-          })
-        } else {
-          const current = s.transcript.find(e => e.id === s.streamingMessageId)
-          if (current) {
-            current.content += delta
-            current.timestamp = new Date()
-          }
-        }
         s.lastMessage = (s.lastMessageRole === 'assistant' ? s.lastMessage : '') + delta
         s.lastMessageRole = 'assistant'
       }
       if (notifType === 'assistant_response') {
         const msg = (payload.message as string) || ''
         s.lastMessage = msg; s.lastMessageRole = 'assistant'
-        const current = s.streamingMessageId ? s.transcript.find(e => e.id === s.streamingMessageId) : undefined
-        if (current) {
-          current.content = msg || current.content
-          if (typeof payload.reasoning === 'string' && payload.reasoning.trim()) current.reasoning = payload.reasoning
-          if (payload.reasoning_details) current.reasoningDetails = payload.reasoning_details
-          current.timestamp = new Date()
-          s.streamingMessageId = undefined
-        } else {
-          pushTranscript(s, {
-            kind: 'message',
-            role: 'assistant',
-            content: msg,
-            reasoning: typeof payload.reasoning === 'string' ? payload.reasoning : undefined,
-            reasoningDetails: payload.reasoning_details,
-          })
-        }
+        s.streamingMessageId = undefined
+        pushTranscript(s, {
+          kind: 'message',
+          role: 'assistant',
+          content: msg,
+          reasoning: typeof payload.reasoning === 'string' ? payload.reasoning : undefined,
+          reasoningDetails: payload.reasoning_details,
+        })
       }
       if (notifType === 'turn_complete') {
         s.phase = 'waiting_for_input'

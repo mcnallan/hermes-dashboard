@@ -31,6 +31,7 @@ function hasReasoning(entry: ChatEntry) {
 }
 
 function sameTranscriptEntry(a: ChatEntry, b: ChatEntry) {
+  if (a.id && b.id && a.id === b.id) return true
   if (a.kind !== b.kind || a.role !== b.role) return false
   if (a.toolCallId && b.toolCallId) return a.toolCallId === b.toolCallId
   if ((a.kind === 'tool_call' || a.kind === 'tool_result') && a.toolName && b.toolName) {
@@ -38,16 +39,23 @@ function sameTranscriptEntry(a: ChatEntry, b: ChatEntry) {
   }
   if (a.kind !== 'message') return false
   const withinSameTurn = Math.abs(a.timestamp.getTime() - b.timestamp.getTime()) < 5 * 60_000
-  return withinSameTurn && normalizedContent(a.content) === normalizedContent(b.content)
+  const aContent = normalizedContent(a.content)
+  const bContent = normalizedContent(b.content)
+  if (withinSameTurn && aContent === bContent) return true
+  const closeStreamUpdate = Math.abs(a.timestamp.getTime() - b.timestamp.getTime()) < 10_000
+  return a.role === 'assistant' && closeStreamUpdate && Boolean(aContent && bContent) && (
+    aContent.startsWith(bContent) || bContent.startsWith(aContent)
+  )
 }
 
 function mergeTranscriptPair(existing: ChatEntry, incoming: ChatEntry): ChatEntry {
-  const preferIncoming = !hasReasoning(existing) && hasReasoning(incoming)
+  const incomingHasBetterContent = incoming.content.length > existing.content.length
+  const preferIncoming = (!hasReasoning(existing) && hasReasoning(incoming)) || incomingHasBetterContent
   const base = preferIncoming ? incoming : existing
   const other = preferIncoming ? existing : incoming
   return {
     ...base,
-    content: base.content || other.content,
+    content: base.content.length >= other.content.length ? base.content : other.content,
     toolCallId: base.toolCallId || other.toolCallId,
     toolName: base.toolName || other.toolName,
     toolInput: base.toolInput ?? other.toolInput,
@@ -193,6 +201,25 @@ function ChatBubble({
   )
 }
 
+function SessionActivityPhase({ phase }: { phase: Agent['phase'] }) {
+  if (phase === 'waiting_for_input' || phase === 'ended') return null
+  const label = phase === 'waiting_for_approval'
+    ? 'WAITING FOR APPROVAL'
+    : phase === 'compacting'
+      ? 'COMPACTING CONTEXT'
+      : 'AGENT WORKING'
+  return (
+    <div className="chat-phase active">
+      <span>{label}</span>
+      <span className="typing-dots" aria-hidden="true">
+        <i />
+        <i />
+        <i />
+      </span>
+    </div>
+  )
+}
+
 export function SessionChatModal({ agent, onClose, onLoadTranscript, onSendMessage, onApprovalDecision }: Props) {
   const [entries, setEntries] = useState<ChatEntry[]>([])
   const [draft, setDraft] = useState('')
@@ -313,6 +340,7 @@ export function SessionChatModal({ agent, onClose, onLoadTranscript, onSendMessa
               onApprovalDecision={onApprovalDecision}
             />
           ))}
+          <SessionActivityPhase phase={agent.phase} />
         </div>
 
         <div className="chat-compose">

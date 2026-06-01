@@ -1953,6 +1953,7 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-md);
+  align-items: stretch;
 }
 
 .chat-empty {
@@ -1965,6 +1966,7 @@
 }
 
 .chat-bubble {
+  flex: 0 0 auto;
   max-width: 76%;
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
@@ -2040,6 +2042,7 @@
 }
 
 .chat-tool {
+  flex: 0 0 auto;
   align-self: stretch;
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
@@ -2096,7 +2099,8 @@
 }
 
 .chat-tool-body.open {
-  max-height: min(52vh, 560px);
+  max-height: none;
+  overflow: visible;
 }
 
 .chat-tool-approval {
@@ -2137,6 +2141,7 @@
 }
 
 .chat-phase {
+  flex: 0 0 auto;
   align-self: center;
   display: flex;
   gap: var(--space-sm);
@@ -2150,6 +2155,37 @@
   border: 1px solid var(--border);
   border-radius: 999px;
   background: var(--surface-raised);
+}
+
+.chat-phase.active {
+  position: sticky;
+  bottom: var(--space-sm);
+  z-index: 2;
+  color: var(--interactive);
+  border-color: color-mix(in srgb, var(--interactive) 34%, var(--border));
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.08);
+}
+
+.typing-dots {
+  display: inline-flex;
+  gap: 3px;
+  align-items: center;
+}
+
+.typing-dots i {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: typingDot 900ms var(--ease) infinite;
+}
+
+.typing-dots i:nth-child(2) {
+  animation-delay: 120ms;
+}
+
+.typing-dots i:nth-child(3) {
+  animation-delay: 240ms;
 }
 
 .chat-compose {
