@@ -13,6 +13,7 @@ import {
 interface Props {
   agent: Agent
   onClose: () => void
+  onApprovalDecision: (approvalId: string, decision: 'approve' | 'deny') => Promise<void>
 }
 
 function ContextRing({ used, max }: { used: number; max: number }) {
@@ -105,7 +106,22 @@ function ToolRow({ tool }: { tool: ToolCall }) {
   )
 }
 
-export function AgentDetail({ agent, onClose }: Props) {
+function approvalStatusLabel(agent: Agent) {
+  if (agent.approvalError) return agent.approvalError
+  switch (agent.approvalStatus) {
+    case 'submitted': return 'sending decision'
+    case 'approved': return 'approved'
+    case 'denied': return 'denied'
+    case 'timeout': return 'timed out'
+    case 'error': return 'response failed'
+    default: return agent.approvalDescription || 'command requires approval'
+  }
+}
+
+export function AgentDetail({ agent, onClose, onApprovalDecision }: Props) {
+  const approvalBusy = agent.approvalStatus === 'submitted'
+  const approvalDisabled = approvalBusy || !agent.approvalId
+
   return (
     <div className="detail">
       <div className="detail-hero">
@@ -164,9 +180,26 @@ export function AgentDetail({ agent, onClose }: Props) {
             PENDING APPROVAL
           </div>
           <div className="approval-block-cmd">{agent.approvalTool}: {agent.approvalInput}</div>
+          <div className="approval-block-desc">{approvalStatusLabel(agent)}</div>
           <div className="approval-actions">
-            <button className="btn-approve">APPROVE</button>
-            <button className="btn-deny">DENY</button>
+            <button
+              className="btn-approve"
+              disabled={approvalDisabled}
+              onClick={() => {
+                if (agent.approvalId) void onApprovalDecision(agent.approvalId, 'approve').catch(console.error)
+              }}
+            >
+              {approvalBusy ? 'SENDING' : 'APPROVE'}
+            </button>
+            <button
+              className="btn-deny"
+              disabled={approvalDisabled}
+              onClick={() => {
+                if (agent.approvalId) void onApprovalDecision(agent.approvalId, 'deny').catch(console.error)
+              }}
+            >
+              DENY
+            </button>
           </div>
         </div>
       )}

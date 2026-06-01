@@ -1,7 +1,11 @@
 import { useState, useEffect, useRef } from 'react'
 import { type Agent, type ActivityEvent, agents as mockAgents, activityFeed as mockFeed } from './data'
 
-const WS_URL = 'ws://localhost:3001'
+const HOST = window.location.hostname === 'localhost'
+  ? '127.0.0.1'
+  : (window.location.hostname || '127.0.0.1')
+const WS_URL = `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${HOST}:3001`
+const API_URL = `http://${HOST}:3002`
 const RECONNECT_MS = 2000
 
 interface ServerState {
@@ -67,5 +71,21 @@ export function useHermes() {
     }
   }, [])
 
-  return { agents, activityFeed, connected }
+  async function respondToApproval(approvalId: string, decision: 'approve' | 'deny') {
+    const res = await fetch(`${API_URL}/api/approvals/${encodeURIComponent(approvalId)}/respond`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decision }),
+    })
+    if (!res.ok) {
+      let message = `approval response failed (${res.status})`
+      try {
+        const data = await res.json() as { error?: string }
+        if (data.error) message = data.error
+      } catch { /* ignore */ }
+      throw new Error(message)
+    }
+  }
+
+  return { agents, activityFeed, connected, respondToApproval }
 }

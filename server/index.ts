@@ -1,4 +1,4 @@
-import { createServer as createNetServer, type Socket } from 'net'
+import { createConnection, createServer as createNetServer, type Socket } from 'net'
 import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from 'http'
 import { WebSocketServer, WebSocket } from 'ws'
 import { unlinkSync, existsSync, readFileSync, readdirSync, statSync, realpathSync } from 'fs'
@@ -6,10 +6,12 @@ import { join } from 'path'
 import { homedir } from 'os'
 
 const SOCKET_PATH = '/tmp/hermes-dashboard.sock'
+const APPROVAL_SOCKET_PATH = '/tmp/hermes-dashboard-approval.sock'
 const WS_PORT = 3001
 const HTTP_PORT = 3002
 const HERMES_HOME = process.env.HERMES_HOME || join(homedir(), '.hermes')
 const MAX_WEBHOOK_BYTES = 1_000_000
+const MAX_APPROVAL_BYTES = 20_000
 
 // =========================================================================
 // Dashboard state
@@ -34,6 +36,16 @@ interface ActivityEntry {
   color: string
 }
 
+interface PendingApproval {
+  id: string
+  command: string
+  description: string
+  surface: string
+  status: 'pending' | 'submitted' | 'approved' | 'denied' | 'timeout' | 'error'
+  submittedChoice?: 'once' | 'deny'
+  error?: string
+}
+
 interface Session {
   sessionId: string
   agent: string
@@ -51,6 +63,7 @@ interface Session {
   turnCount: number
   filesModified: Set<string>
   firstUserMessage?: string
+  pendingApproval?: PendingApproval
 }
 
 const sessions = new Map<string, Session>()
@@ -89,6 +102,21 @@ function toolInputSummary(tool: string, input: unknown): string {
   if (o.pattern) return String(o.pattern)
   if (o.query) return String(o.query)
   return JSON.stringify(o).slice(0, 80)
+}
+
+function approvalChoiceToStatus(choice: unknown): PendingApproval['status'] {
+  const value = String(choice || '').toLowerCase()
+  if (value === 'once' || value === 'session' || value === 'always' || value === 'approve' || value === 'approved') return 'approved'
+  if (value === 'timeout') return 'timeout'
+  if (value === 'error') return 'error'
+  return 'denied'
+}
+
+function approvalContent(payload: Record<string, unknown>): string {
+  const command = String(payload.command || '')
+  const description = String(payload.description || '')
+  if (command && description) return `${command} (${description})`
+  return command || description || 'approval requested'
 }
 
 function processEvent(payload: Record<string, unknown>) {
@@ -143,6 +171,47 @@ function processEvent(payload: Record<string, unknown>) {
       if (status === 'waiting_for_input' || status === 'waiting_for_approval') s.phase = status
       break
     }
+    case 'ApprovalRequest': {
+      const approvalId = String(payload.approval_id || '')
+      const command = String(payload.command || '')
+      const description = String(payload.description || '')
+      if (!approvalId) break
+      s.phase = 'waiting_for_approval'
+      s.pendingApproval = {
+        id: approvalId,
+        command,
+        description,
+        surface: String(payload.surface || ''),
+        status: 'pending',
+      }
+      s.lastMessageRole = 'tool'
+      s.lastToolName = String(payload.approval_tool || 'Approval')
+      pushActivity(s, 'approval', approvalContent(payload), 'var(--accent)')
+      break
+    }
+    case 'ApprovalDecisionSubmitted': {
+      const approvalId = String(payload.approval_id || '')
+      if (approvalId && s.pendingApproval?.id === approvalId) {
+        const choice = String(payload.choice || '').toLowerCase()
+        s.pendingApproval.status = 'submitted'
+        s.pendingApproval.submittedChoice = choice === 'deny' ? 'deny' : 'once'
+      }
+      pushActivity(s, 'approval', `approval submitted: ${String(payload.choice || '')}`, 'var(--warning)')
+      break
+    }
+    case 'ApprovalResponse': {
+      const approvalId = String(payload.approval_id || '')
+      const status = approvalChoiceToStatus(payload.choice)
+      if (approvalId && s.pendingApproval?.id === approvalId) {
+        s.pendingApproval.status = status
+        if (status === 'approved' || status === 'denied' || status === 'timeout') {
+          s.pendingApproval = undefined
+        }
+      }
+      if (s.phase === 'waiting_for_approval') s.phase = 'processing'
+      pushActivity(s, 'approval', `approval ${status}: ${approvalContent(payload)}`, status === 'approved' ? 'var(--success)' : 'var(--accent)')
+      break
+    }
     case 'SessionEnd': { s.phase = 'ended'; pushActivity(s, 'phase', 'Session ended', 'var(--text-disabled)'); break }
   }
   broadcast()
@@ -190,6 +259,118 @@ function readJsonBody(req: IncomingMessage): Promise<string> {
   })
 }
 
+function sendJson(res: ServerResponse, statusCode: number, data: unknown) {
+  res.statusCode = statusCode
+  res.end(JSON.stringify(data))
+}
+
+function findApproval(approvalId: string): { session: Session, approval: PendingApproval } | null {
+  for (const session of sessions.values()) {
+    if (session.pendingApproval?.id === approvalId) {
+      return { session, approval: session.pendingApproval }
+    }
+  }
+  return null
+}
+
+function sendApprovalControl(approvalId: string, choice: 'once' | 'deny'): Promise<Record<string, unknown>> {
+  return new Promise((resolve, reject) => {
+    const client = createConnection(APPROVAL_SOCKET_PATH)
+    let response = ''
+    let requestSent = false
+
+    const timeout = setTimeout(() => {
+      client.destroy()
+      reject(new Error('approval control timed out'))
+    }, 5000)
+
+    client.setEncoding('utf8')
+    client.on('connect', () => {
+      requestSent = true
+      client.end(JSON.stringify({ approval_id: approvalId, choice }))
+    })
+    client.on('data', chunk => {
+      response += chunk
+      if (response.length > MAX_APPROVAL_BYTES) {
+        client.destroy()
+        reject(new Error('approval control response too large'))
+      }
+    })
+    client.on('end', () => {
+      clearTimeout(timeout)
+      try {
+        resolve(JSON.parse(response || '{}') as Record<string, unknown>)
+      } catch {
+        reject(new Error('invalid approval control response'))
+      }
+    })
+    client.on('error', err => {
+      clearTimeout(timeout)
+      if (!requestSent && 'code' in err && err.code === 'ENOENT') {
+        reject(new Error('approval control socket not available'))
+        return
+      }
+      reject(err)
+    })
+  })
+}
+
+async function approvalHandler(req: IncomingMessage, res: ServerResponse, url: string) {
+  const match = url.match(/^\/api\/approvals\/([^/]+)\/respond$/)
+  if (!match || req.method !== 'POST') return false
+
+  const found = findApproval(decodeURIComponent(match[1]))
+  if (!found) {
+    sendJson(res, 404, { ok: false, error: 'approval not found' })
+    return true
+  }
+  if (found.approval.status !== 'pending') {
+    sendJson(res, 409, { ok: false, error: 'approval is not pending' })
+    return true
+  }
+
+  let body: Record<string, unknown>
+  try {
+    body = JSON.parse(await readJsonBody(req)) as Record<string, unknown>
+  } catch {
+    sendJson(res, 400, { ok: false, error: 'invalid json' })
+    return true
+  }
+
+  const raw = String(body.decision || body.choice || '').toLowerCase()
+  const choice = raw === 'approve' || raw === 'once' || raw === 'allow' ? 'once'
+    : raw === 'deny' || raw === 'denied' ? 'deny'
+      : ''
+  if (!choice) {
+    sendJson(res, 400, { ok: false, error: 'invalid decision' })
+    return true
+  }
+
+  found.approval.status = 'submitted'
+  found.approval.submittedChoice = choice
+  broadcast()
+
+  try {
+    const control = await sendApprovalControl(found.approval.id, choice)
+    if (control.ok !== true) {
+      found.approval.status = 'error'
+      found.approval.error = String(control.error || 'approval response failed')
+      broadcast()
+      sendJson(res, 502, { ok: false, error: found.approval.error })
+      return true
+    }
+  } catch (err) {
+    found.approval.status = 'error'
+    found.approval.error = err instanceof Error ? err.message : 'approval response failed'
+    broadcast()
+    sendJson(res, 502, { ok: false, error: found.approval.error })
+    return true
+  }
+
+  sendJson(res, 200, { ok: true, approval_id: found.approval.id, choice })
+  return true
+}
+
 function pushActivity(s: Session, type: ActivityEntry['type'], content: string, color: string) {
   activity.unshift({ id: `e${++counter}`, sessionId: s.sessionId, agentTitle: s.firstUserMessage?.slice(0, 40) || s.agent, type, content, timestamp: new Date(), color })
   if (activity.length > 100) activity.length = 100
@@ -207,6 +388,12 @@ function serializeState(): string {
     lastMessageRole: s.lastMessageRole, lastToolName: s.lastToolName,
     toolsInProgress: Array.from(s.toolsInProgress.values()).map(t => ({ ...t, timestamp: t.timestamp.toISOString() })),
     recentTools: s.recentTools.map(t => ({ ...t, timestamp: t.timestamp.toISOString() })),
+    approvalId: s.pendingApproval?.id,
+    approvalTool: s.pendingApproval ? s.lastToolName || 'Approval' : undefined,
+    approvalInput: s.pendingApproval?.command,
+    approvalDescription: s.pendingApproval?.description,
+    approvalStatus: s.pendingApproval?.status,
+    approvalError: s.pendingApproval?.error,
     subagents: [], tokenCount: 0, maxTokens: 1_000_000, turnCount: s.turnCount,
     filesModified: s.filesModified.size, linesChanged: 0, costUsd: 0,
   }))
@@ -328,6 +515,12 @@ const httpServer = createHttpServer(async (req: IncomingMessage, res: ServerResp
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
   res.setHeader('Content-Type', 'application/json')
   if (req.method === 'OPTIONS') { res.end(); return }
+  if (req.method !== 'GET' && origin && !ALLOWED_ORIGINS.includes(origin)) {
+    sendJson(res, 403, { error: 'origin not allowed' })
+    return
+  }
+
+  if (await approvalHandler(req, res, req.url || '/')) return
 
   if (req.method === 'POST' && (req.url === '/api/webhook' || req.url === '/api/events')) {
     try {

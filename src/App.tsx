@@ -14,7 +14,7 @@ import './app.css'
 type Theme = 'light' | 'dark'
 
 export default function App() {
-  const { agents, activityFeed, connected } = useHermes()
+  const { agents, activityFeed, connected, respondToApproval } = useHermes()
   const [selected, setSelected] = useState<Agent | null>(null)
   const [now, setNow] = useState(() => Date.now())
   const [view, setView] = useState<'dashboard' | 'wiki'>('dashboard')
@@ -68,7 +68,11 @@ export default function App() {
       <div className="main">
         <AgentList agents={agents} selected={selectedAgent} onSelect={setSelected} />
         {selectedAgent ? (
-          <AgentDetail agent={selectedAgent} onClose={() => setSelected(null)} />
+          <AgentDetail
+            agent={selectedAgent}
+            onClose={() => setSelected(null)}
+            onApprovalDecision={respondToApproval}
+          />
         ) : (
           <div className="sidebar">
             <ToolBreakdown agents={agents} />

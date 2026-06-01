@@ -40,8 +40,12 @@ export interface Agent {
   toolsInProgress: ToolCall[]
   recentTools: ToolCall[]
   subagents: Subagent[]
+  approvalId?: string
   approvalTool?: string
   approvalInput?: string
+  approvalDescription?: string
+  approvalStatus?: 'pending' | 'submitted' | 'approved' | 'denied' | 'timeout' | 'error'
+  approvalError?: string
   tokenCount: number
   maxTokens: number
   turnCount: number
