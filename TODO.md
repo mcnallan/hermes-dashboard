@@ -1,0 +1,1 @@
+Add some sort of plan mode integration via skill/plugin to Hermes. This would show up as a view plan button within the chat/session interface of the dashboard, which then renders the markdown with approve/deny/revise buttons.
