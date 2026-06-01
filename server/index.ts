@@ -445,8 +445,8 @@ function processEvent(payload: Record<string, unknown>) {
       if (notifType === 'turn_complete') {
         s.phase = 'waiting_for_input'
         s.streamingMessageId = undefined
-        pushTranscript(s, { kind: 'phase', role: 'system', content: 'Waiting for input' })
-        pushActivity(s, 'phase', 'Waiting for input', 'var(--warning)')
+        pushTranscript(s, { kind: 'phase', role: 'system', content: 'Agent finished' })
+        pushActivity(s, 'phase', 'Agent finished', 'var(--success)')
       }
       const status = payload.status as string
       if (status === 'waiting_for_input' || status === 'waiting_for_approval') s.phase = status

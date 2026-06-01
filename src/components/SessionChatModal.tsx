@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { type Agent, type ChatEntry, formatDuration } from '../data'
+import { type Agent, type ChatEntry, formatDuration, phaseLabel } from '../data'
 
 interface Props {
   agent: Agent
@@ -320,7 +320,7 @@ export function SessionChatModal({ agent, onClose, onLoadTranscript, onSendMessa
             <div className="chat-modal-kicker">SESSION CHAT</div>
             <div className="chat-modal-title">{agent.displayTitle}</div>
             <div className="chat-modal-meta">
-              <span>{agent.phase.replaceAll('_', ' ')}</span>
+              <span>{phaseLabel(agent.phase)}</span>
               <span>{agent.turnCount} turns</span>
               <span>{formatDuration(Date.now() - agent.createdAt.getTime())}</span>
             </div>

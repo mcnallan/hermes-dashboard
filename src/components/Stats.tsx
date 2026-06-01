@@ -44,22 +44,14 @@ export function HeroSection({ agents }: { agents: Agent[] }) {
 }
 
 export function AttentionBanner({ agents }: { agents: Agent[] }) {
-  const needsAttention = agents.filter(a =>
-    a.phase === 'waiting_for_approval' || a.phase === 'waiting_for_input'
-  )
-  if (needsAttention.length === 0) return null
-
-  const approvals = needsAttention.filter(a => a.phase === 'waiting_for_approval')
-  const inputs = needsAttention.filter(a => a.phase === 'waiting_for_input')
-  const parts: string[] = []
-  if (approvals.length > 0) parts.push(`${approvals.length} awaiting approval`)
-  if (inputs.length > 0) parts.push(`${inputs.length} awaiting input`)
+  const approvals = agents.filter(a => a.phase === 'waiting_for_approval')
+  if (approvals.length === 0) return null
 
   return (
     <div className="attention-banner">
       <div className="attention-dot" />
-      <span className="attention-text">{parts.join(' / ')}</span>
-      <span className="attention-count">{needsAttention.length} AGENT{needsAttention.length > 1 ? 'S' : ''}</span>
+      <span className="attention-text">{approvals.length} awaiting approval</span>
+      <span className="attention-count">{approvals.length} AGENT{approvals.length > 1 ? 'S' : ''}</span>
     </div>
   )
 }

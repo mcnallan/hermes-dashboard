@@ -432,8 +432,8 @@
 }
 
 .phase-dot.waiting {
-  background: var(--warning);
-  box-shadow: 0 0 6px var(--glow-warning);
+  background: var(--success);
+  box-shadow: 0 0 6px var(--glow-success);
 }
 
 .phase-dot.idle {

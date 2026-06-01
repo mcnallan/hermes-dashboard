@@ -388,7 +388,7 @@ export const agents: Agent[] = [
     sessionId: 'sess_a7e1b3',
     displayTitle: 'set up k8s autoscaler for workers',
     cwd: '/home/user/projects/infra',
-    phase: 'idle',
+    phase: 'waiting_for_input',
     lastActivity: ago(18),
     createdAt: ago(75),
     pid: 43600,
@@ -500,7 +500,7 @@ export const activityFeed = [
   { id: 'e8', sessionId: 'sess_8a1f3d', agentTitle: 'stripe migration', type: 'tool', content: 'Edit src/lib/stripe-client.ts', timestamp: ago(2.5), color: 'var(--success)' },
   { id: 'e9', sessionId: 'sess_f5d9a2', agentTitle: 'e2e encryption', type: 'tool', content: 'Write identity.ts', timestamp: ago(5), color: 'var(--success)' },
   { id: 'e10', sessionId: 'sess_e3f2a9', agentTitle: 'timezone bug', type: 'phase', content: 'Agent working', timestamp: ago(0.2), color: 'var(--interactive)' },
-  { id: 'e11', sessionId: 'sess_a7e1b3', agentTitle: 'k8s autoscaler', type: 'phase', content: 'Session idle', timestamp: ago(18), color: 'var(--text-disabled)' },
+  { id: 'e11', sessionId: 'sess_a7e1b3', agentTitle: 'k8s autoscaler', type: 'phase', content: 'Agent finished', timestamp: ago(18), color: 'var(--success)' },
   { id: 'e12', sessionId: 'sess_f5d9a2', agentTitle: 'e2e encryption', type: 'tool', content: 'Write crypto/types.ts', timestamp: ago(8), color: 'var(--success)' },
 ] satisfies ActivityEvent[]
 activityFeed.sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime())
@@ -509,7 +509,7 @@ export function phaseLabel(phase: Phase): string {
   switch (phase) {
     case 'idle': return 'IDLE'
     case 'processing': return 'PROCESSING'
-    case 'waiting_for_input': return 'AWAITING INPUT'
+    case 'waiting_for_input': return 'AGENT FINISHED'
     case 'waiting_for_approval': return 'NEEDS APPROVAL'
     case 'compacting': return 'COMPACTING'
     case 'ended': return 'ENDED'
@@ -520,7 +520,7 @@ export function phaseColor(phase: Phase): string {
   switch (phase) {
     case 'processing': return 'var(--text-display)'
     case 'waiting_for_approval': return 'var(--accent)'
-    case 'waiting_for_input': return 'var(--warning)'
+    case 'waiting_for_input': return 'var(--success)'
     case 'idle': return 'var(--text-disabled)'
     case 'compacting': return 'var(--interactive)'
     case 'ended': return 'var(--text-disabled)'
