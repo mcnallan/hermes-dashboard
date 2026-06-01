@@ -84,6 +84,7 @@ interface UsageState {
 
 interface Session {
   sessionId: string
+  source?: string
   agent: string
   cwd: string
   phase: string
@@ -515,10 +516,10 @@ function processWebhookBody(body: string) {
     parsed = trimmed.split('\n').map(line => JSON.parse(line) as unknown)
   }
 
-  const events = Array.isArray(parsed)
+  const events: unknown[] = Array.isArray(parsed)
     ? parsed
     : typeof parsed === 'object' && parsed !== null && Array.isArray((parsed as Record<string, unknown>).events)
-      ? (parsed as Record<string, unknown>).events
+      ? (parsed as Record<string, unknown>).events as unknown[]
       : [parsed]
 
   let count = 0
@@ -675,6 +676,131 @@ function textValue(value: unknown): string {
   if (value == null) return ''
   if (typeof value === 'string') return value
   try { return JSON.stringify(value, null, 2) } catch { return String(value) }
+}
+
+function parseEnvFile(path: string): Record<string, string> {
+  if (!existsSync(path)) return {}
+  const values: Record<string, string> = {}
+  for (const rawLine of readFileSync(path, 'utf-8').split(/\r?\n/)) {
+    const line = rawLine.trim()
+    if (!line || line.startsWith('#')) continue
+    const idx = line.indexOf('=')
+    if (idx <= 0) continue
+    const key = line.slice(0, idx).trim()
+    let value = line.slice(idx + 1).trim()
+    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+      value = value.slice(1, -1)
+    }
+    values[key] = value
+  }
+  return values
+}
+
+function hermesEnv(): Record<string, string> {
+  return { ...parseEnvFile(join(HERMES_HOME, '.env')), ...process.env } as Record<string, string>
+}
+
+function normalizeApiBaseUrl(value: string) {
+  let base = value.trim().replace(/\/+$/, '')
+  if (base.endsWith('/v1')) base = base.slice(0, -3)
+  return base
+}
+
+function apiServerConfig(): { baseUrl: string, apiKey: string } {
+  const env = hermesEnv()
+  if (env.HERMES_API_SERVER_URL) {
+    return {
+      baseUrl: normalizeApiBaseUrl(env.HERMES_API_SERVER_URL),
+      apiKey: env.HERMES_API_SERVER_KEY || env.API_SERVER_KEY || '',
+    }
+  }
+  const rawHost = env.API_SERVER_HOST || '127.0.0.1'
+  const host = rawHost === '0.0.0.0' || rawHost === '::' ? '127.0.0.1' : rawHost
+  const port = env.API_SERVER_PORT || '8642'
+  return {
+    baseUrl: `http://${host}:${port}`,
+    apiKey: env.API_SERVER_KEY || '',
+  }
+}
+
+async function readSessionDbSource(sessionId: string): Promise<string | null> {
+  const code = `
+import json, os, sys
+from pathlib import Path
+for p in [os.environ.get("HERMES_AGENT_PATH"), str(Path.home() / "Projects" / "hermes-agent")]:
+    if p and p not in sys.path:
+        sys.path.insert(0, p)
+from hermes_state import SessionDB
+db = SessionDB()
+try:
+    sid = db.resolve_session_id(sys.argv[1])
+    session = db.get_session(sid) if sid else None
+    if not session:
+        print(json.dumps({"ok": False, "error": "session not found"}))
+    else:
+        print(json.dumps({"ok": True, "session_id": sid, "source": session.get("source")}))
+finally:
+    db.close()
+`
+  try {
+    const { stdout } = await execFileAsync('python3', ['-c', code, sessionId], {
+      maxBuffer: 200_000,
+      env: process.env,
+    })
+    const parsed = JSON.parse(stdout || '{}') as { ok?: boolean, source?: string }
+    return parsed.ok && parsed.source ? parsed.source : null
+  } catch {
+    return null
+  }
+}
+
+async function drainApiSessionChatStream(res: Response) {
+  try {
+    if (!res.body) return
+    const reader = res.body.getReader()
+    while (true) {
+      const { done } = await reader.read()
+      if (done) break
+    }
+  } catch (err) {
+    console.warn('api session chat stream drain failed', err)
+  }
+}
+
+async function sendApiSessionChat(sessionId: string, message: string): Promise<void> {
+  const { baseUrl, apiKey } = apiServerConfig()
+  if (!baseUrl) throw new Error('API server URL is not configured')
+  if (!apiKey) throw new Error('API server key is not configured')
+
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 10_000)
+  try {
+    const res = await fetch(`${baseUrl}/api/sessions/${encodeURIComponent(sessionId)}/chat/stream`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ message }),
+      signal: controller.signal,
+    })
+    if (!res.ok) {
+      let detail = `API session chat failed (${res.status})`
+      try {
+        const body = await res.json() as { error?: { message?: string }, message?: string }
+        detail = body.error?.message || body.message || detail
+      } catch {
+        try {
+          const text = await res.text()
+          if (text.trim()) detail = text.trim().slice(0, 500)
+        } catch { /* ignore */ }
+      }
+      throw new Error(detail)
+    }
+    void drainApiSessionChatStream(res)
+  } finally {
+    clearTimeout(timer)
+  }
 }
 
 function normalizeDbMessage(row: Record<string, unknown>): ChatEntry[] {
@@ -845,10 +971,21 @@ async function chatMessageHandler(req: IncomingMessage, res: ServerResponse, url
 
   try {
     const session = sessions.get(sessionId)
-    const control = await sendChatControl(session?.chatSocket || DEFAULT_CHAT_SOCKET_PATH, sessionId, message)
-    if (control.ok !== true) {
-      sendJson(res, 409, { ok: false, error: String(control.error || 'message rejected') })
-      return true
+    const source = session?.source || await readSessionDbSource(sessionId)
+    if (session && source) session.source = source
+
+    if (source === 'api_server') {
+      if (session?.phase === 'processing' || session?.phase === 'waiting_for_approval') {
+        sendJson(res, 409, { ok: false, error: 'session is busy' })
+        return true
+      }
+      await sendApiSessionChat(sessionId, message)
+    } else {
+      const control = await sendChatControl(session?.chatSocket || DEFAULT_CHAT_SOCKET_PATH, sessionId, message)
+      if (control.ok !== true) {
+        sendJson(res, 409, { ok: false, error: String(control.error || 'message rejected') })
+        return true
+      }
     }
   } catch (err) {
     sendJson(res, 502, { ok: false, error: err instanceof Error ? err.message : 'message send failed' })
@@ -1064,7 +1201,7 @@ httpServer.listen(HTTP_PORT, () => console.log(`wiki API on http://localhost:${H
 
 const wss = new WebSocketServer({
   port: WS_PORT,
-  verifyClient: ({ origin }) => !origin || ALLOWED_ORIGINS.includes(origin),
+  verifyClient: ({ origin }: { origin?: string }) => !origin || ALLOWED_ORIGINS.includes(origin),
 })
 function broadcast() {
   const data = serializeState()
