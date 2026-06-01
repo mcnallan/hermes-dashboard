@@ -3,8 +3,9 @@ import { type Agent, type ChatEntry, type PendingApproval, formatDuration, phase
 
 interface Props {
   agent: Agent
+  initialTranscript: ChatEntry[]
+  initialTranscriptError?: string
   onClose: () => void
-  onLoadTranscript: (sessionId: string) => Promise<ChatEntry[]>
   onSendMessage: (sessionId: string, message: string) => Promise<void>
   onApprovalDecision: (approvalId: string, decision: 'approve' | 'deny') => Promise<void>
   isMockData: boolean
@@ -307,15 +308,23 @@ function PendingApprovals({
   )
 }
 
-export function SessionChatModal({ agent, onClose, onLoadTranscript, onSendMessage, onApprovalDecision, isMockData }: Props) {
+export function SessionChatModal({
+  agent,
+  initialTranscript,
+  initialTranscriptError,
+  onClose,
+  onSendMessage,
+  onApprovalDecision,
+  isMockData,
+}: Props) {
   const [entries, setEntries] = useState<ChatEntry[]>(() => (
-    isMockData ? mergeTranscriptEntries(agent.transcript || []) : []
+    mergeTranscriptEntries(initialTranscript)
   ))
   const [draft, setDraft] = useState('')
-  const [loading, setLoading] = useState(!isMockData)
+  const [loading, setLoading] = useState(false)
   const [sending, setSending] = useState(false)
   const [streamingMock, setStreamingMock] = useState(false)
-  const [error, setError] = useState('')
+  const [error, setError] = useState(initialTranscriptError || '')
   const [modalHeight, setModalHeight] = useState<number | null>(null)
   const [measuredInitialHeight, setMeasuredInitialHeight] = useState(false)
   const modalRef = useRef<HTMLDivElement | null>(null)
@@ -331,38 +340,12 @@ export function SessionChatModal({ agent, onClose, onLoadTranscript, onSendMessa
   const canSend = agent.phase !== 'ended'
 
   useEffect(() => {
-    let cancelled = false
-    setLoading(!isMockData)
-    setError('')
+    setLoading(false)
+    setError(initialTranscriptError || '')
     initialScrollSessionRef.current = null
     stickToBottomRef.current = true
-
-    if (isMockData) {
-      setEntries(mergeTranscriptEntries(agent.transcript || []))
-      setLoading(false)
-      return () => { cancelled = true }
-    }
-
-    onLoadTranscript(agent.sessionId)
-      .then(data => {
-        if (cancelled) return
-        if (data.length > 0) {
-          setEntries(mergeTranscriptEntries(data))
-          return
-        }
-        setEntries(mergeTranscriptEntries(agent.transcript || []))
-      })
-      .catch(err => {
-        if (cancelled) return
-        if (agent.transcript && agent.transcript.length > 0) {
-          setEntries(mergeTranscriptEntries(agent.transcript))
-          return
-        }
-        setError(err instanceof Error ? err.message : 'transcript failed')
-      })
-      .finally(() => { if (!cancelled) setLoading(false) })
-    return () => { cancelled = true }
-  }, [agent.sessionId, agent.transcript, isMockData, onLoadTranscript])
+    setEntries(mergeTranscriptEntries(initialTranscript))
+  }, [agent.sessionId, initialTranscript, initialTranscriptError])
 
   useEffect(() => {
     const live = agent.transcript || []

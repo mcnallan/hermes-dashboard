@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { type Agent } from './data'
+import { type Agent, type ChatEntry } from './data'
 import { useHermes } from './useHermes'
 import { Header } from './components/Header'
 import { AttentionBanner } from './components/Stats'
@@ -13,11 +13,17 @@ import { Wiki } from './components/Wiki'
 import './app.css'
 
 type Theme = 'light' | 'dark'
+type ChatTranscriptState = {
+  sessionId: string
+  entries: ChatEntry[]
+  error?: string
+}
 
 export default function App() {
   const { agents, activityFeed, connected, isMockData, respondToApproval, getSessionTranscript, sendSessionMessage } = useHermes()
   const [selected, setSelected] = useState<Agent | null>(null)
   const [chatAgentId, setChatAgentId] = useState<string | null>(null)
+  const [chatTranscript, setChatTranscript] = useState<ChatTranscriptState | null>(null)
   const [now, setNow] = useState(() => Date.now())
   const [view, setView] = useState<'dashboard' | 'wiki'>('dashboard')
   const [theme, setTheme] = useState<Theme>(() => {
@@ -46,6 +52,48 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKey)
   }, [chatAgentId])
 
+  const selectedAgent = selected
+    ? agents.find(a => a.sessionId === selected.sessionId) || null
+    : null
+  const chatAgent = chatAgentId
+    ? agents.find(a => a.sessionId === chatAgentId) || selectedAgent
+    : null
+
+  useEffect(() => {
+    if (!chatAgent) {
+      setChatTranscript(null)
+      return
+    }
+
+    let cancelled = false
+    const fallback = chatAgent.transcript || []
+
+    if (isMockData) {
+      setChatTranscript({ sessionId: chatAgent.sessionId, entries: fallback })
+      return () => { cancelled = true }
+    }
+
+    setChatTranscript(null)
+    getSessionTranscript(chatAgent.sessionId)
+      .then(entries => {
+        if (cancelled) return
+        setChatTranscript({
+          sessionId: chatAgent.sessionId,
+          entries: entries.length > 0 ? entries : fallback,
+        })
+      })
+      .catch(err => {
+        if (cancelled) return
+        setChatTranscript({
+          sessionId: chatAgent.sessionId,
+          entries: fallback,
+          error: err instanceof Error ? err.message : 'transcript failed',
+        })
+      })
+
+    return () => { cancelled = true }
+  }, [chatAgent?.sessionId, getSessionTranscript, isMockData])
+
   if (view === 'wiki') {
     return (
       <div className="app">
@@ -53,13 +101,6 @@ export default function App() {
       </div>
     )
   }
-
-  const selectedAgent = selected
-    ? agents.find(a => a.sessionId === selected.sessionId) || null
-    : null
-  const chatAgent = chatAgentId
-    ? agents.find(a => a.sessionId === chatAgentId) || selectedAgent
-    : null
 
   return (
     <div className="app">
@@ -91,12 +132,13 @@ export default function App() {
 
       <SessionTimeline agents={agents} now={now} />
 
-      {chatAgent && (
+      {chatAgent && chatTranscript?.sessionId === chatAgent.sessionId && (
         <SessionChatModal
           key={chatAgent.sessionId}
           agent={chatAgent}
+          initialTranscript={chatTranscript.entries}
+          initialTranscriptError={chatTranscript.error}
           onClose={() => setChatAgentId(null)}
-          onLoadTranscript={getSessionTranscript}
           onSendMessage={sendSessionMessage}
           onApprovalDecision={respondToApproval}
           isMockData={isMockData}
