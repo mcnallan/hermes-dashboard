@@ -8,7 +8,10 @@ import {
   type WikiTool,
 } from '../wikiData'
 
-const API = 'http://localhost:3002/api/wiki'
+const API_HOST = window.location.hostname === 'localhost'
+  ? '127.0.0.1'
+  : (window.location.hostname || '127.0.0.1')
+const API = `http://${API_HOST}:3002/api/wiki`
 
 type Page =
   | 'overview' | 'skills' | 'plugins' | 'tools'

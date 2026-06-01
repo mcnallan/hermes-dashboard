@@ -4,14 +4,19 @@ import { WebSocketServer, WebSocket } from 'ws'
 import { unlinkSync, existsSync, readFileSync, readdirSync, statSync, realpathSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
+import { execFile } from 'child_process'
+import { promisify } from 'util'
 
 const SOCKET_PATH = '/tmp/hermes-dashboard.sock'
 const APPROVAL_SOCKET_PATH = '/tmp/hermes-dashboard-approval.sock'
+const DEFAULT_CHAT_SOCKET_PATH = '/tmp/hermes-dashboard-chat.sock'
 const WS_PORT = 3001
 const HTTP_PORT = 3002
 const HERMES_HOME = process.env.HERMES_HOME || join(homedir(), '.hermes')
 const MAX_WEBHOOK_BYTES = 1_000_000
 const MAX_APPROVAL_BYTES = 20_000
+const MAX_CHAT_BYTES = 100_000
+const execFileAsync = promisify(execFile)
 
 // =========================================================================
 // Dashboard state
@@ -24,6 +29,25 @@ interface ToolEntry {
   status: string
   timestamp: Date
   durationMs?: number
+  output?: string
+}
+
+type ChatEntryRole = 'user' | 'assistant' | 'tool' | 'system'
+type ChatEntryKind = 'message' | 'tool_call' | 'tool_result' | 'phase'
+
+interface ChatEntry {
+  id: string
+  kind: ChatEntryKind
+  role: ChatEntryRole
+  timestamp: Date
+  content: string
+  toolCallId?: string
+  toolName?: string
+  toolInput?: unknown
+  toolStatus?: string
+  reasoning?: string
+  reasoningDetails?: unknown
+  source: 'db' | 'live'
 }
 
 interface ActivityEntry {
@@ -72,6 +96,7 @@ interface Session {
   lastToolName?: string
   toolsInProgress: Map<string, ToolEntry>
   recentTools: ToolEntry[]
+  transcript: ChatEntry[]
   turnCount: number
   filesModified: Set<string>
   firstUserMessage?: string
@@ -79,6 +104,8 @@ interface Session {
   usage: UsageState
   model?: string
   provider?: string
+  streamingMessageId?: string
+  chatSocket?: string
 }
 
 const sessions = new Map<string, Session>()
@@ -116,11 +143,15 @@ function getOrCreateSession(sessionId: string, payload: Record<string, unknown>)
       lastMessageRole: 'assistant',
       toolsInProgress: new Map(),
       recentTools: [],
+      transcript: [],
       turnCount: 0,
       filesModified: new Set(),
       usage: emptyUsage(),
     }
     sessions.set(sessionId, s)
+  }
+  if (typeof payload.chat_socket === 'string' && payload.chat_socket.trim()) {
+    s.chatSocket = payload.chat_socket.trim()
   }
   return s
 }
@@ -237,6 +268,69 @@ function approvalContent(payload: Record<string, unknown>): string {
   return command || description || 'approval requested'
 }
 
+function pushTranscript(s: Session, entry: Omit<ChatEntry, 'id' | 'timestamp' | 'source'> & { id?: string, timestamp?: Date }) {
+  s.transcript = mergeTranscriptEntries([...s.transcript, {
+    ...entry,
+    id: entry.id || `c${++counter}`,
+    timestamp: entry.timestamp || new Date(),
+    source: 'live',
+  }])
+  if (s.transcript.length > 300) s.transcript = s.transcript.slice(-300)
+}
+
+function normalizedContent(value: string): string {
+  return value.trim().replace(/\s+/g, ' ')
+}
+
+function hasReasoning(entry: ChatEntry): boolean {
+  return Boolean(
+    (typeof entry.reasoning === 'string' && entry.reasoning.trim()) ||
+    entry.reasoningDetails,
+  )
+}
+
+function sameTranscriptEntry(a: ChatEntry, b: ChatEntry): boolean {
+  if (a.kind !== b.kind || a.role !== b.role) return false
+  if (a.toolCallId && b.toolCallId) return a.toolCallId === b.toolCallId
+  if ((a.kind === 'tool_call' || a.kind === 'tool_result') && a.toolName && b.toolName) {
+    return a.toolName === b.toolName && normalizedContent(a.content) === normalizedContent(b.content)
+  }
+  if (a.kind !== 'message') return false
+  const withinSameTurn = Math.abs(a.timestamp.getTime() - b.timestamp.getTime()) < 5 * 60_000
+  return withinSameTurn && normalizedContent(a.content) === normalizedContent(b.content)
+}
+
+function mergeTranscriptPair(existing: ChatEntry, incoming: ChatEntry): ChatEntry {
+  const preferIncoming = !hasReasoning(existing) && hasReasoning(incoming)
+  const base = preferIncoming ? incoming : existing
+  const other = preferIncoming ? existing : incoming
+  return {
+    ...base,
+    content: base.content || other.content,
+    toolCallId: base.toolCallId || other.toolCallId,
+    toolName: base.toolName || other.toolName,
+    toolInput: base.toolInput ?? other.toolInput,
+    toolStatus: base.toolStatus || other.toolStatus,
+    reasoning: base.reasoning || other.reasoning,
+    reasoningDetails: base.reasoningDetails ?? other.reasoningDetails,
+    timestamp: existing.timestamp.getTime() <= incoming.timestamp.getTime() ? existing.timestamp : incoming.timestamp,
+    source: base.source === 'db' || other.source === 'db' ? 'db' : 'live',
+  }
+}
+
+function mergeTranscriptEntries(entries: ChatEntry[]): ChatEntry[] {
+  const merged: ChatEntry[] = []
+  for (const entry of entries.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime())) {
+    const existingIndex = merged.findIndex(candidate => sameTranscriptEntry(candidate, entry))
+    if (existingIndex >= 0) {
+      merged[existingIndex] = mergeTranscriptPair(merged[existingIndex], entry)
+    } else {
+      merged.push(entry)
+    }
+  }
+  return merged
+}
+
 function sessionForApproval(approvalId: string): Session | null {
   if (!approvalId) return null
   for (const session of sessions.values()) {
@@ -271,6 +365,16 @@ function processEvent(payload: Record<string, unknown>) {
       const input = toolInputSummary(tool, payload.tool_input)
       s.toolsInProgress.set(id, { id, name: tool, input, status: 'running', timestamp: new Date() })
       s.lastToolName = tool; s.lastMessageRole = 'tool'
+      pushTranscript(s, {
+        id: `tool-call-${id}`,
+        kind: 'tool_call',
+        role: 'assistant',
+        content: input,
+        toolCallId: id,
+        toolName: tool,
+        toolInput: payload.tool_input,
+        toolStatus: 'running',
+      })
       pushActivity(s, 'tool', `${tool} ${input}`, 'var(--text-display)')
       break
     }
@@ -280,9 +384,20 @@ function processEvent(payload: Record<string, unknown>) {
       const inProg = toolUseId ? s.toolsInProgress.get(toolUseId) : null
       if (inProg) {
         inProg.status = 'success'; inProg.durationMs = Date.now() - inProg.timestamp.getTime()
+        inProg.output = String(payload.message || '')
         s.recentTools.push(inProg); s.toolsInProgress.delete(toolUseId)
         if (s.recentTools.length > 30) s.recentTools = s.recentTools.slice(-30)
       }
+      pushTranscript(s, {
+        id: `tool-result-${toolUseId || ++counter}`,
+        kind: 'tool_result',
+        role: 'tool',
+        content: String(payload.message || ''),
+        toolCallId: toolUseId,
+        toolName: String(payload.tool || ''),
+        toolInput: payload.tool_input,
+        toolStatus: 'success',
+      })
       const tool = payload.tool as string
       if (tool === 'Edit' || tool === 'Write') {
         const path = (payload.tool_input as Record<string, unknown>)?.file_path
@@ -293,14 +408,61 @@ function processEvent(payload: Record<string, unknown>) {
     case 'UserPromptSubmit': {
       s.phase = 'processing'; const msg = (payload.message as string) || ''
       s.lastMessage = msg; s.lastMessageRole = 'user'; s.turnCount++
+      s.streamingMessageId = undefined
+      pushTranscript(s, { kind: 'message', role: 'user', content: msg })
       if (!s.firstUserMessage && msg) s.firstUserMessage = msg
       dropRelatedPlaceholders(s, payload)
       break
     }
     case 'Notification': {
       const notifType = payload.notification_type as string
-      if (notifType === 'assistant_response') { s.lastMessage = (payload.message as string) || ''; s.lastMessageRole = 'assistant' }
-      if (notifType === 'turn_complete') { s.phase = 'waiting_for_input'; pushActivity(s, 'phase', 'Waiting for input', 'var(--warning)') }
+      if (notifType === 'assistant_delta') {
+        const delta = (payload.message as string) || ''
+        if (!delta) break
+        if (!s.streamingMessageId) {
+          s.streamingMessageId = `assistant-stream-${++counter}`
+          pushTranscript(s, {
+            id: s.streamingMessageId,
+            kind: 'message',
+            role: 'assistant',
+            content: delta,
+          })
+        } else {
+          const current = s.transcript.find(e => e.id === s.streamingMessageId)
+          if (current) {
+            current.content += delta
+            current.timestamp = new Date()
+          }
+        }
+        s.lastMessage = (s.lastMessageRole === 'assistant' ? s.lastMessage : '') + delta
+        s.lastMessageRole = 'assistant'
+      }
+      if (notifType === 'assistant_response') {
+        const msg = (payload.message as string) || ''
+        s.lastMessage = msg; s.lastMessageRole = 'assistant'
+        const current = s.streamingMessageId ? s.transcript.find(e => e.id === s.streamingMessageId) : undefined
+        if (current) {
+          current.content = msg || current.content
+          if (typeof payload.reasoning === 'string' && payload.reasoning.trim()) current.reasoning = payload.reasoning
+          if (payload.reasoning_details) current.reasoningDetails = payload.reasoning_details
+          current.timestamp = new Date()
+          s.streamingMessageId = undefined
+        } else {
+          pushTranscript(s, {
+            kind: 'message',
+            role: 'assistant',
+            content: msg,
+            reasoning: typeof payload.reasoning === 'string' ? payload.reasoning : undefined,
+            reasoningDetails: payload.reasoning_details,
+          })
+        }
+      }
+      if (notifType === 'turn_complete') {
+        s.phase = 'waiting_for_input'
+        s.streamingMessageId = undefined
+        pushTranscript(s, { kind: 'phase', role: 'system', content: 'Waiting for input' })
+        pushActivity(s, 'phase', 'Waiting for input', 'var(--warning)')
+      }
       const status = payload.status as string
       if (status === 'waiting_for_input' || status === 'waiting_for_approval') s.phase = status
       break
@@ -517,6 +679,210 @@ async function approvalHandler(req: IncomingMessage, res: ServerResponse, url: s
   return true
 }
 
+function timestampFromDb(value: unknown): string {
+  const n = numberValue(value)
+  if (n > 1_000_000_000_000) return new Date(n).toISOString()
+  if (n > 0) return new Date(n * 1000).toISOString()
+  return new Date().toISOString()
+}
+
+function textValue(value: unknown): string {
+  if (value == null) return ''
+  if (typeof value === 'string') return value
+  try { return JSON.stringify(value, null, 2) } catch { return String(value) }
+}
+
+function normalizeDbMessage(row: Record<string, unknown>): ChatEntry[] {
+  const id = String(row.id || `db-${++counter}`)
+  const role = String(row.role || 'system') as ChatEntryRole
+  const timestamp = new Date(timestampFromDb(row.timestamp))
+  const entries: ChatEntry[] = []
+  const reasoning = typeof row.reasoning === 'string' && row.reasoning ? row.reasoning
+    : typeof row.reasoning_content === 'string' && row.reasoning_content ? row.reasoning_content
+      : undefined
+  const reasoningDetails = row.reasoning_details
+  if (role === 'assistant' && Array.isArray(row.tool_calls) && row.tool_calls.length > 0) {
+    const visible = textValue(row.content)
+    if (visible.trim()) {
+      entries.push({ id: `db-msg-${id}`, kind: 'message', role, timestamp, content: visible, reasoning, reasoningDetails, source: 'db' })
+    }
+    for (const call of row.tool_calls) {
+      const c = call && typeof call === 'object' ? call as Record<string, unknown> : {}
+      const fn = c.function && typeof c.function === 'object' ? c.function as Record<string, unknown> : {}
+      const rawArgs = fn.arguments ?? c.arguments ?? ''
+      let parsedArgs: unknown = rawArgs
+      if (typeof rawArgs === 'string') {
+        try { parsedArgs = JSON.parse(rawArgs) } catch { /* keep raw */ }
+      }
+      entries.push({
+        id: `db-tool-call-${id}-${String(c.id || fn.name || entries.length)}`,
+        kind: 'tool_call',
+        role: 'assistant',
+        timestamp,
+        content: textValue(parsedArgs),
+        toolCallId: String(c.id || ''),
+        toolName: String(fn.name || c.name || ''),
+        toolInput: parsedArgs,
+        toolStatus: 'success',
+        reasoning,
+        reasoningDetails,
+        source: 'db',
+      })
+    }
+    return entries
+  }
+  entries.push({
+    id: `db-msg-${id}`,
+    kind: role === 'tool' ? 'tool_result' : 'message',
+    role: role === 'user' || role === 'assistant' || role === 'tool' ? role : 'system',
+    timestamp,
+    content: textValue(row.content),
+    toolCallId: row.tool_call_id ? String(row.tool_call_id) : undefined,
+    toolName: row.tool_name ? String(row.tool_name) : undefined,
+    reasoning,
+    reasoningDetails,
+    source: 'db',
+  })
+  return entries
+}
+
+async function readSessionDbTranscript(sessionId: string): Promise<ChatEntry[]> {
+  const code = `
+import json, os, sys
+from pathlib import Path
+for p in [os.environ.get("HERMES_AGENT_PATH"), str(Path.home() / "Projects" / "hermes-agent")]:
+    if p and p not in sys.path:
+        sys.path.insert(0, p)
+from hermes_state import SessionDB
+db = SessionDB()
+try:
+    sid = db.resolve_session_id(sys.argv[1])
+    if not sid:
+        print(json.dumps({"ok": False, "error": "session not found"}))
+    else:
+        print(json.dumps({"ok": True, "session_id": sid, "messages": db.get_messages(sid)}))
+finally:
+    db.close()
+`
+  try {
+    const { stdout } = await execFileAsync('python3', ['-c', code, sessionId], {
+      maxBuffer: 5_000_000,
+      env: process.env,
+    })
+    const parsed = JSON.parse(stdout || '{}') as { ok?: boolean, messages?: Record<string, unknown>[], error?: string }
+    if (!parsed.ok) return []
+    return (parsed.messages || []).flatMap(normalizeDbMessage)
+  } catch {
+    return []
+  }
+}
+
+function serializeTranscript(entries: ChatEntry[]) {
+  return entries.map(e => ({ ...e, timestamp: e.timestamp.toISOString() }))
+}
+
+async function transcriptHandler(req: IncomingMessage, res: ServerResponse, url: string) {
+  const match = url.match(/^\/api\/sessions\/([^/]+)\/transcript$/)
+  if (!match || req.method !== 'GET') return false
+
+  const sessionId = decodeURIComponent(match[1])
+  const dbEntries = await readSessionDbTranscript(sessionId)
+  const liveEntries = sessions.get(sessionId)?.transcript || []
+  const newestDb = dbEntries.reduce((max, e) => Math.max(max, e.timestamp.getTime()), 0)
+  const merged = mergeTranscriptEntries([
+    ...dbEntries,
+    ...liveEntries.filter(e => e.timestamp.getTime() >= newestDb),
+  ])
+  sendJson(res, 200, { ok: true, session_id: sessionId, entries: serializeTranscript(merged) })
+  return true
+}
+
+function sendChatControl(socketPath: string, sessionId: string, message: string): Promise<Record<string, unknown>> {
+  return new Promise((resolve, reject) => {
+    const client = createConnection(socketPath)
+    let response = ''
+    const timeout = setTimeout(() => {
+      client.destroy()
+      reject(new Error('chat control timed out'))
+    }, 5000)
+
+    client.setEncoding('utf8')
+    client.on('connect', () => {
+      client.end(JSON.stringify({ session_id: sessionId, message }))
+    })
+    client.on('data', chunk => {
+      response += chunk
+      if (response.length > MAX_APPROVAL_BYTES) {
+        client.destroy()
+        reject(new Error('chat control response too large'))
+      }
+    })
+    client.on('end', () => {
+      clearTimeout(timeout)
+      try {
+        resolve(JSON.parse(response || '{}') as Record<string, unknown>)
+      } catch {
+        reject(new Error('invalid chat control response'))
+      }
+    })
+    client.on('error', err => {
+      clearTimeout(timeout)
+      if ('code' in err && err.code === 'ENOENT') {
+        reject(new Error(`chat control socket not available: ${socketPath}`))
+        return
+      }
+      reject(err)
+    })
+  })
+}
+
+async function chatMessageHandler(req: IncomingMessage, res: ServerResponse, url: string) {
+  const match = url.match(/^\/api\/sessions\/([^/]+)\/messages$/)
+  if (!match || req.method !== 'POST') return false
+
+  let body: Record<string, unknown>
+  try {
+    body = JSON.parse(await readJsonBody(req)) as Record<string, unknown>
+  } catch {
+    sendJson(res, 400, { ok: false, error: 'invalid json' })
+    return true
+  }
+  const sessionId = decodeURIComponent(match[1])
+  const message = String(body.message || '').trim()
+  if (!message) {
+    sendJson(res, 400, { ok: false, error: 'message is required' })
+    return true
+  }
+  if (message.length > MAX_CHAT_BYTES) {
+    sendJson(res, 413, { ok: false, error: 'message too large' })
+    return true
+  }
+
+  try {
+    const session = sessions.get(sessionId)
+    const control = await sendChatControl(session?.chatSocket || DEFAULT_CHAT_SOCKET_PATH, sessionId, message)
+    if (control.ok !== true) {
+      sendJson(res, 409, { ok: false, error: String(control.error || 'message rejected') })
+      return true
+    }
+  } catch (err) {
+    sendJson(res, 502, { ok: false, error: err instanceof Error ? err.message : 'message send failed' })
+    return true
+  }
+
+  const session = sessions.get(sessionId)
+  if (session) {
+    session.phase = 'processing'
+    session.lastMessage = message
+    session.lastMessageRole = 'user'
+    session.turnCount++
+    pushTranscript(session, { kind: 'message', role: 'user', content: message })
+    broadcast()
+  }
+  sendJson(res, 200, { ok: true })
+  return true
+}
+
 function pushActivity(s: Session, type: ActivityEntry['type'], content: string, color: string) {
   activity.unshift({ id: `e${++counter}`, sessionId: s.sessionId, agentTitle: s.firstUserMessage?.slice(0, 40) || s.agent, type, content, timestamp: new Date(), color })
   if (activity.length > 100) activity.length = 100
@@ -534,6 +900,7 @@ function serializeState(): string {
     lastMessageRole: s.lastMessageRole, lastToolName: s.lastToolName,
     toolsInProgress: Array.from(s.toolsInProgress.values()).map(t => ({ ...t, timestamp: t.timestamp.toISOString() })),
     recentTools: s.recentTools.map(t => ({ ...t, timestamp: t.timestamp.toISOString() })),
+    transcript: serializeTranscript(s.transcript),
     approvalId: s.pendingApproval?.id,
     approvalTool: s.pendingApproval ? s.lastToolName || 'Approval' : undefined,
     approvalInput: s.pendingApproval?.command,
@@ -679,6 +1046,8 @@ const httpServer = createHttpServer(async (req: IncomingMessage, res: ServerResp
   }
 
   if (await approvalHandler(req, res, req.url || '/')) return
+  if (await chatMessageHandler(req, res, req.url || '/')) return
+  if (await transcriptHandler(req, res, req.url || '/')) return
 
   if (req.method === 'POST' && (req.url === '/api/webhook' || req.url === '/api/events')) {
     try {

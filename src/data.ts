@@ -39,6 +39,7 @@ export interface Agent {
   lastToolName?: string
   toolsInProgress: ToolCall[]
   recentTools: ToolCall[]
+  transcript?: ChatEntry[]
   subagents: Subagent[]
   approvalId?: string
   approvalTool?: string
@@ -71,6 +72,24 @@ export interface ActivityEvent {
   content: string
   timestamp: Date
   color?: string
+}
+
+export type ChatEntryKind = 'message' | 'tool_call' | 'tool_result' | 'phase'
+export type ChatEntryRole = 'user' | 'assistant' | 'tool' | 'system'
+
+export interface ChatEntry {
+  id: string
+  kind: ChatEntryKind
+  role: ChatEntryRole
+  timestamp: Date
+  content: string
+  toolCallId?: string
+  toolName?: string
+  toolInput?: unknown
+  toolStatus?: string
+  reasoning?: string
+  reasoningDetails?: unknown
+  source: 'db' | 'live'
 }
 
 const now = new Date()
@@ -120,6 +139,49 @@ export const agents: Agent[] = [
     filesModified: 6,
     linesChanged: 341,
     costUsd: 4.13,
+    transcript: [
+      {
+        id: 'sess_8a1f3d-m1',
+        kind: 'message',
+        role: 'user',
+        timestamp: ago(51),
+        content: 'migrate payments to stripe v4',
+        source: 'db',
+      },
+      {
+        id: 'sess_8a1f3d-m2',
+        kind: 'message',
+        role: 'assistant',
+        timestamp: ago(50.5),
+        content: 'I found the Stripe webhook surface and I’m updating the event parsing to the v4 SDK shape.',
+        reasoning: 'Plan:\n1. inspect all Stripe call sites\n2. update webhook event types\n3. run a quick pass for any stale helpers',
+        source: 'db',
+      },
+      {
+        id: 'sess_8a1f3d-t1',
+        kind: 'tool_call',
+        role: 'assistant',
+        timestamp: ago(50),
+        content: '{\n  "path": "src/webhooks/stripe.ts"\n}',
+        toolCallId: 't1a',
+        toolName: 'Read',
+        toolInput: { path: 'src/webhooks/stripe.ts' },
+        toolStatus: 'success',
+        source: 'db',
+      },
+      {
+        id: 'sess_8a1f3d-t2',
+        kind: 'tool_result',
+        role: 'tool',
+        timestamp: ago(49.8),
+        content: 'Updated webhook handler and related helpers to use the new StripeEvent typing.',
+        toolCallId: 't1b',
+        toolName: 'Edit',
+        toolInput: { path: 'src/webhooks/stripe.ts' },
+        toolStatus: 'success',
+        source: 'db',
+      },
+    ],
   },
   {
     sessionId: 'sess_c2b7e4',
@@ -133,8 +195,11 @@ export const agents: Agent[] = [
     tmuxTarget: 'work:0.1',
     lastMessage: 'Found the leak. The sharp instance pool never releases buffers after resize. I need to run the repro script to confirm the fix.',
     lastMessageRole: 'assistant',
+    approvalId: 'approval_mock_oom_001',
     approvalTool: 'Bash',
-    approvalInput: 'node --max-old-space-size=256 scripts/repro-oom.js',
+    approvalInput: 'node --max-old-space-size=256 scripts/repro-oom.js --verify-fix',
+    approvalDescription: 'Run the repro script with a constrained heap to verify the OOM fix.',
+    approvalStatus: 'pending',
     toolsInProgress: [],
     recentTools: [
       { id: 't2a', name: 'Bash', input: 'kubectl logs media-worker-7f8b9 --tail=200', status: 'success', timestamp: ago(10), durationMs: 3200 },
@@ -151,6 +216,77 @@ export const agents: Agent[] = [
     filesModified: 2,
     linesChanged: 38,
     costUsd: 2.03,
+    transcript: [
+      {
+        id: 'sess_c2b7e4-m1',
+        kind: 'message',
+        role: 'user',
+        timestamp: ago(27.7),
+        content: 'debug the OOM in the image pipeline and verify the fix',
+        source: 'db',
+      },
+      {
+        id: 'sess_c2b7e4-m2',
+        kind: 'message',
+        role: 'assistant',
+        timestamp: ago(27.2),
+        content: 'I’ll reproduce the failure first, then inspect the pool lifecycle around sharp buffers.',
+        reasoning: 'A constrained heap repro gives a stable signal before changing the release path.',
+        source: 'db',
+      },
+      {
+        id: 'sess_c2b7e4-t0',
+        kind: 'tool_call',
+        role: 'assistant',
+        timestamp: ago(26.9),
+        content: '{\n  "command": "node --max-old-space-size=256 scripts/repro-oom.js --iterations=400"\n}',
+        toolCallId: 'mock-terminal-oom-001',
+        toolName: 'terminal',
+        toolInput: { command: 'node --max-old-space-size=256 scripts/repro-oom.js --iterations=400' },
+        toolStatus: 'success',
+        source: 'db',
+      },
+      {
+        id: 'sess_c2b7e4-t0-result',
+        kind: 'tool_result',
+        role: 'tool',
+        timestamp: ago(26.6),
+        content: [
+          'starting repro: 400 resize iterations, heap limit 256 MB',
+          'iteration 050 rss=181MB heapUsed=62MB external=87MB pool.active=8 pool.idle=0',
+          'iteration 100 rss=226MB heapUsed=74MB external=129MB pool.active=8 pool.idle=0',
+          'iteration 150 rss=271MB heapUsed=81MB external=174MB pool.active=8 pool.idle=0',
+          'FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory',
+          'stack: ImagePipeline.resize -> SharpPool.acquire -> SharpInstance.clone -> Buffer.from',
+          'note: pool.release() returns instances to the idle queue but never calls destroy() after failed resize jobs',
+        ].join('\n'),
+        toolCallId: 'mock-terminal-oom-001',
+        toolName: 'terminal',
+        toolStatus: 'success',
+        source: 'db',
+      },
+      {
+        id: 'sess_c2b7e4-m3',
+        kind: 'message',
+        role: 'assistant',
+        timestamp: ago(26.1),
+        content: 'The repro confirms leaked external buffers after failed resize jobs. I updated the pool release path and need approval to run the constrained verification command.',
+        reasoning: 'The follow-up command exercises the same failure mode after the pool cleanup change, so it should be treated as the acceptance check.',
+        source: 'db',
+      },
+      {
+        id: 'approval_mock_oom_001',
+        kind: 'tool_call',
+        role: 'assistant',
+        timestamp: ago(25.8),
+        content: '{\n  "command": "node --max-old-space-size=256 scripts/repro-oom.js --verify-fix"\n}',
+        toolCallId: 'approval_mock_oom_001',
+        toolName: 'terminal',
+        toolInput: { command: 'node --max-old-space-size=256 scripts/repro-oom.js --verify-fix' },
+        toolStatus: 'waiting_for_approval',
+        source: 'db',
+      },
+    ],
   },
   {
     sessionId: 'sess_f5d9a2',
@@ -204,6 +340,49 @@ export const agents: Agent[] = [
     filesModified: 8,
     linesChanged: 892,
     costUsd: 6.87,
+    transcript: [
+      {
+        id: 'sess_f5d9a2-m1',
+        kind: 'message',
+        role: 'user',
+        timestamp: ago(89.7),
+        content: 'add end-to-end encryption to chat',
+        source: 'db',
+      },
+      {
+        id: 'sess_f5d9a2-m2',
+        kind: 'message',
+        role: 'assistant',
+        timestamp: ago(89.2),
+        content: 'I’m implementing the key exchange and message encryption flow first, then I’ll wire the transport updates.',
+        reasoning: 'Need to establish a per-conversation shared secret before message serialization and encryption can be made deterministic.',
+        source: 'db',
+      },
+      {
+        id: 'sess_f5d9a2-t1',
+        kind: 'tool_call',
+        role: 'assistant',
+        timestamp: ago(88.8),
+        content: '{\n  "file_path": "src/lib/crypto/key-exchange.ts"\n}',
+        toolCallId: 't3a',
+        toolName: 'Write',
+        toolInput: { file_path: 'src/lib/crypto/key-exchange.ts' },
+        toolStatus: 'success',
+        source: 'db',
+      },
+      {
+        id: 'sess_f5d9a2-t2',
+        kind: 'tool_result',
+        role: 'tool',
+        timestamp: ago(88.6),
+        content: 'Created shared-secret derivation and encrypted payload helpers.',
+        toolCallId: 't3b',
+        toolName: 'Write',
+        toolInput: { file_path: 'src/lib/crypto/message-encrypt.ts' },
+        toolStatus: 'success',
+        source: 'db',
+      },
+    ],
   },
   {
     sessionId: 'sess_a7e1b3',

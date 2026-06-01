@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 
 SOCKET_PATH = "/tmp/hermes-dashboard.sock"
 APPROVAL_SOCKET_PATH = "/tmp/hermes-dashboard-approval.sock"
+CHAT_SOCKET_PATH = os.environ.get("HERMES_DASHBOARD_CHAT_SOCKET_PATH") or f"/tmp/hermes-dashboard-chat-{os.getpid()}.sock"
 WEBHOOK_URL = os.environ.get("HERMES_DASHBOARD_WEBHOOK_URL", "http://127.0.0.1:3002/api/webhook")
 AGENT_NAME = os.environ.get("HERMES_AGENT_NAME", "agent")
 _TOOL_CALL_IDS = defaultdict(list)
@@ -39,8 +40,11 @@ _SERVER_PROCESS = None
 _APPROVALS = {}
 _APPROVALS_LOCK = threading.Lock()
 _APPROVAL_SERVER_THREAD = None
+_CHAT_SERVER_THREAD = None
 _ORIGINAL_APPROVAL_CALLBACKS = {}
 _THREAD_STATE = threading.local()
+_PLUGIN_CONTEXT = None
+_ORIGINAL_STREAM_CALLBACKS = {}
 _USAGE_LOCK = threading.Lock()
 _SESSION_USAGE = defaultdict(lambda: {
     "input_tokens": 0,
@@ -80,6 +84,7 @@ def _base_payload(event_name, session_id, status, **extra):
         "status": status,
         "pid": os.getpid(),
         "tty": _tty(),
+        "chat_socket": CHAT_SOCKET_PATH,
     }
     payload.update(extra)
     return payload
@@ -430,16 +435,105 @@ def _handle_approval_control(payload):
     return {"ok": True, "approval_id": approval_id, "choice": choice}
 
 
-def _approval_control_server():
+def _handle_chat_control(payload):
+    session_id = str(payload.get("session_id") or "")
+    message = str(payload.get("message") or "").strip()
+    if not session_id or not message:
+        return {"ok": False, "error": "session_id and message are required"}
+
+    active = _active_session_id()
+    if active and session_id != active:
+        return {"ok": False, "error": "session is not the active dashboard session"}
+    if _PLUGIN_CONTEXT is None:
+        return {"ok": False, "error": "plugin context is not available"}
+
+    submitted = _submit_tui_prompt(session_id, message)
+    if submitted is None:
+        try:
+            injected = _PLUGIN_CONTEXT.inject_message(message, role="user")
+        except Exception as exc:
+            logger.debug("hermes-dashboard: chat injection failed: %s", exc)
+            return {"ok": False, "error": str(exc)}
+        if not injected:
+            return {"ok": False, "error": "Hermes rejected the injected message"}
+    elif not submitted.get("ok"):
+        return submitted
+
+    _send(_base_payload(
+        "UserPromptSubmit",
+        session_id,
+        "processing",
+        agent=AGENT_NAME,
+        platform="dashboard",
+        message=message,
+    ))
+    return {"ok": True, "session_id": session_id}
+
+
+def _submit_tui_prompt(session_id, message):
+    """Submit a follow-up to Hermes TUI sessions using the gateway RPC path.
+
+    Dashboard events carry the persisted Hermes session key. The TUI gateway's
+    prompt.submit method expects its short live session id, so resolve the live
+    id from the in-process session table and call handle_request directly. Using
+    dispatch() here would bind stdio as the current transport and steal future
+    stream events from the owning TUI/dashboard transport.
+    """
+    server = sys.modules.get("tui_gateway.server")
+    if server is None:
+        return None
+
+    sessions = getattr(server, "_sessions", None)
+    if not isinstance(sessions, dict):
+        return None
+
+    live_sid = None
+    if session_id in sessions:
+        live_sid = session_id
+    else:
+        for sid, session in sessions.items():
+            if isinstance(session, dict) and session.get("session_key") == session_id:
+                live_sid = sid
+                break
+
+    if not live_sid:
+        return None
+
     try:
-        if os.path.exists(APPROVAL_SOCKET_PATH):
-            os.unlink(APPROVAL_SOCKET_PATH)
+        response = server.handle_request({
+            "jsonrpc": "2.0",
+            "id": f"hermes-dashboard-chat-{uuid.uuid4().hex}",
+            "method": "prompt.submit",
+            "params": {
+                "session_id": live_sid,
+                "text": message,
+            },
+        })
+    except Exception as exc:
+        logger.debug("hermes-dashboard: tui prompt.submit failed: %s", exc)
+        return {"ok": False, "error": str(exc)}
+
+    if not isinstance(response, dict):
+        return {"ok": False, "error": "Hermes did not return a prompt submission response"}
+    error = response.get("error")
+    if isinstance(error, dict):
+        return {"ok": False, "error": str(error.get("message") or "message rejected")}
+    result = response.get("result")
+    if isinstance(result, dict) and result.get("status") == "streaming":
+        return {"ok": True, "session_id": session_id, "live_session_id": live_sid}
+    return {"ok": False, "error": "Hermes rejected the prompt submission"}
+
+
+def _json_socket_server(socket_path, handler, log_name):
+    try:
+        if os.path.exists(socket_path):
+            os.unlink(socket_path)
         server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        server.bind(APPROVAL_SOCKET_PATH)
-        os.chmod(APPROVAL_SOCKET_PATH, 0o600)
+        server.bind(socket_path)
+        os.chmod(socket_path, 0o600)
         server.listen(16)
     except Exception as exc:
-        logger.debug("hermes-dashboard: approval control socket failed: %s", exc)
+        logger.debug("hermes-dashboard: %s socket failed: %s", log_name, exc)
         return
 
     while True:
@@ -456,13 +550,21 @@ def _approval_control_server():
                         break
                     chunks.append(chunk)
                 payload = json.loads(b"".join(chunks).decode("utf-8"))
-                response = _handle_approval_control(payload if isinstance(payload, dict) else {})
+                response = handler(payload if isinstance(payload, dict) else {})
             except Exception as exc:
                 response = {"ok": False, "error": str(exc)}
             try:
                 conn.sendall(json.dumps(response).encode("utf-8"))
             except OSError:
                 pass
+
+
+def _approval_control_server():
+    _json_socket_server(APPROVAL_SOCKET_PATH, _handle_approval_control, "approval control")
+
+
+def _chat_control_server():
+    _json_socket_server(CHAT_SOCKET_PATH, _handle_chat_control, "chat control")
 
 
 def _ensure_approval_control_server():
@@ -475,6 +577,18 @@ def _ensure_approval_control_server():
         daemon=True,
     )
     _APPROVAL_SERVER_THREAD.start()
+
+
+def _ensure_chat_control_server():
+    global _CHAT_SERVER_THREAD
+    if _CHAT_SERVER_THREAD and _CHAT_SERVER_THREAD.is_alive():
+        return
+    _CHAT_SERVER_THREAD = threading.Thread(
+        target=_chat_control_server,
+        name="hermes-dashboard-chat-control",
+        daemon=True,
+    )
+    _CHAT_SERVER_THREAD.start()
 
 
 def _fallback_approval(command, description, allow_permanent=True):
@@ -550,6 +664,40 @@ def _install_approval_callback():
         logger.debug("hermes-dashboard: approval callback install failed: %s", exc)
 
 
+def _install_stream_callback():
+    try:
+        cli = _PLUGIN_CONTEXT._manager._cli_ref if _PLUGIN_CONTEXT is not None else None
+        agent = getattr(cli, "agent", None)
+        if agent is None:
+            return
+        current = getattr(agent, "stream_delta_callback", None)
+        if getattr(current, "_hermes_dashboard_wrapped", False):
+            return
+
+        key = id(agent)
+        _ORIGINAL_STREAM_CALLBACKS[key] = current
+
+        def dashboard_stream_delta(text):
+            if text:
+                _send(_base_payload(
+                    "Notification",
+                    _active_session_id(),
+                    "processing",
+                    notification_type="assistant_delta",
+                    agent=AGENT_NAME,
+                    message=str(text),
+                ))
+            original = _ORIGINAL_STREAM_CALLBACKS.get(key)
+            if original is not None:
+                return original(text)
+            return None
+
+        dashboard_stream_delta._hermes_dashboard_wrapped = True
+        agent.stream_delta_callback = dashboard_stream_delta
+    except Exception as exc:
+        logger.debug("hermes-dashboard: stream callback install failed: %s", exc)
+
+
 def _restore_approval_callback():
     try:
         from tools.terminal_tool import set_approval_callback
@@ -601,7 +749,9 @@ def _on_session_start(session_id="", platform="", **kwargs):
     _set_active_session(session_id)
     _ensure_server()
     _ensure_approval_control_server()
+    _ensure_chat_control_server()
     _install_approval_callback()
+    _install_stream_callback()
     _send(_base_payload(
         "SessionStart", session_id, "waiting_for_input",
         agent=AGENT_NAME, platform=platform or "cli",
@@ -627,7 +777,7 @@ def _on_post_tool_call(tool_name="", args=None, result="", task_id="", **kwargs)
     _set_active_session(session_id)
     if task_id and session_id:
         _TASK_SESSION_IDS[task_id] = session_id
-    result_str = str(result)[:100] if result else ""
+    result_str = str(result)[:4000] if result else ""
     cache_key = f"{task_id}:{tool_name}"
     tool_use_id = _TOOL_CALL_IDS[cache_key].pop(0) if _TOOL_CALL_IDS.get(cache_key) else None
     if cache_key in _TOOL_CALL_IDS and not _TOOL_CALL_IDS[cache_key]:
@@ -652,7 +802,11 @@ def _on_post_llm_call(session_id="", assistant_response="", **kwargs):
     _set_active_session(session_id)
     _send(_base_payload(
         "Notification", session_id, "processing",
-        notification_type="assistant_response", agent=AGENT_NAME, message=assistant_response or "",
+        notification_type="assistant_response",
+        agent=AGENT_NAME,
+        message=assistant_response or "",
+        reasoning=kwargs.get("reasoning") or kwargs.get("reasoning_content") or "",
+        reasoning_details=kwargs.get("reasoning_details"),
     ))
 
 
@@ -749,6 +903,8 @@ def _on_post_approval_response(command="", description="", pattern_key="", patte
 
 
 def register(ctx):
+    global _PLUGIN_CONTEXT
+    _PLUGIN_CONTEXT = ctx
     ctx.register_hook("on_session_start", _on_session_start)
     ctx.register_hook("pre_llm_call", _on_pre_llm_call)
     ctx.register_hook("pre_tool_call", _on_pre_tool_call)

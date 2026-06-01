@@ -5,6 +5,7 @@ import { Header } from './components/Header'
 import { HeroSection, AttentionBanner } from './components/Stats'
 import { AgentList } from './components/AgentList'
 import { AgentDetail } from './components/AgentDetail'
+import { SessionChatModal } from './components/SessionChatModal'
 import { ToolBreakdown } from './components/ToolBreakdown'
 import { ActivityFeed } from './components/ActivityFeed'
 import { SessionTimeline } from './components/SessionTimeline'
@@ -14,8 +15,9 @@ import './app.css'
 type Theme = 'light' | 'dark'
 
 export default function App() {
-  const { agents, activityFeed, connected, respondToApproval } = useHermes()
+  const { agents, activityFeed, connected, respondToApproval, getSessionTranscript, sendSessionMessage } = useHermes()
   const [selected, setSelected] = useState<Agent | null>(null)
+  const [chatAgentId, setChatAgentId] = useState<string | null>(null)
   const [now, setNow] = useState(() => Date.now())
   const [view, setView] = useState<'dashboard' | 'wiki'>('dashboard')
   const [theme, setTheme] = useState<Theme>(() => {
@@ -35,11 +37,14 @@ export default function App() {
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      if (e.key === 'Escape') setSelected(null)
+      if (e.key === 'Escape') {
+        if (chatAgentId) setChatAgentId(null)
+        else setSelected(null)
+      }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [])
+  }, [chatAgentId])
 
   if (view === 'wiki') {
     return (
@@ -51,6 +56,9 @@ export default function App() {
 
   const selectedAgent = selected
     ? agents.find(a => a.sessionId === selected.sessionId) || null
+    : null
+  const chatAgent = chatAgentId
+    ? agents.find(a => a.sessionId === chatAgentId) || selectedAgent
     : null
 
   return (
@@ -71,6 +79,7 @@ export default function App() {
           <AgentDetail
             agent={selectedAgent}
             onClose={() => setSelected(null)}
+            onOpenChat={() => setChatAgentId(selectedAgent.sessionId)}
             onApprovalDecision={respondToApproval}
           />
         ) : (
@@ -82,6 +91,16 @@ export default function App() {
       </div>
 
       <SessionTimeline agents={agents} now={now} />
+
+      {chatAgent && (
+        <SessionChatModal
+          agent={chatAgent}
+          onClose={() => setChatAgentId(null)}
+          onLoadTranscript={getSessionTranscript}
+          onSendMessage={sendSessionMessage}
+          onApprovalDecision={respondToApproval}
+        />
+      )}
     </div>
   )
 }

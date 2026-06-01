@@ -13,6 +13,7 @@ import {
 interface Props {
   agent: Agent
   onClose: () => void
+  onOpenChat: () => void
   onApprovalDecision: (approvalId: string, decision: 'approve' | 'deny') => Promise<void>
 }
 
@@ -119,7 +120,7 @@ function approvalStatusLabel(agent: Agent) {
   }
 }
 
-export function AgentDetail({ agent, onClose, onApprovalDecision }: Props) {
+export function AgentDetail({ agent, onClose, onOpenChat, onApprovalDecision }: Props) {
   const approvalBusy = agent.approvalStatus === 'submitted'
   const approvalDisabled = approvalBusy || !agent.approvalId
   const contextTokens = agent.contextTokenCount ?? agent.tokenCount
@@ -136,7 +137,10 @@ export function AgentDetail({ agent, onClose, onApprovalDecision }: Props) {
           </div>
         </div>
         <ContextRing used={contextTokens} max={agent.maxTokens} />
-        <button className="detail-close" onClick={onClose}>ESC</button>
+        <div className="detail-actions">
+          <button className="detail-chat" onClick={onOpenChat}>CHAT</button>
+          <button className="detail-close" onClick={onClose}>ESC</button>
+        </div>
       </div>
 
       <div className="detail-metrics">
