@@ -1879,15 +1879,16 @@
 
 .chat-modal {
   width: min(980px, 100%);
-  height: calc(100vh - 32px);
+  height: auto;
   min-height: 560px;
+  max-height: calc(100vh - 32px);
   background: var(--surface);
   border: 1px solid var(--border-visible);
   border-radius: var(--radius-lg);
   box-shadow: var(--detail-shadow);
   overflow: hidden;
-  display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  display: flex;
+  flex-direction: column;
   animation: fadeIn 180ms var(--ease);
 }
 
@@ -1932,8 +1933,12 @@
     linear-gradient(180deg, transparent, rgba(0, 0, 0, 0.02)),
     var(--surface);
   overflow-y: auto;
-  min-height: 0;
+  flex: 1 1 320px;
+  min-height: 280px;
   padding: var(--space-lg);
+}
+
+.chat-stream-inner {
   display: flex;
   flex-direction: column;
   gap: var(--space-md);
@@ -2188,6 +2193,7 @@
   display: grid;
   grid-template-columns: 1fr auto;
   gap: var(--space-sm);
+  align-items: start;
 }
 
 .chat-compose textarea {
@@ -2201,6 +2207,7 @@
   padding: var(--space-md);
   font: 14px/1.45 var(--font-body);
   outline: none;
+  align-self: start;
 }
 
 .chat-compose textarea:focus {
@@ -2281,7 +2288,8 @@
   }
 
   .chat-modal {
-    height: 100vh;
+    height: auto;
+    max-height: 100vh;
     width: 100%;
     border-radius: 0;
     border-left: none;

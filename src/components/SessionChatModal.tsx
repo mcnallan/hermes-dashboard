@@ -312,7 +312,13 @@ export function SessionChatModal({ agent, onClose, onLoadTranscript, onSendMessa
   const [loading, setLoading] = useState(true)
   const [sending, setSending] = useState(false)
   const [error, setError] = useState('')
+  const [modalHeight, setModalHeight] = useState<number | null>(null)
+  const modalRef = useRef<HTMLDivElement | null>(null)
+  const headerRef = useRef<HTMLDivElement | null>(null)
+  const approvalsRef = useRef<HTMLDivElement | null>(null)
+  const transcriptRef = useRef<HTMLDivElement | null>(null)
   const scrollerRef = useRef<HTMLDivElement | null>(null)
+  const composerRef = useRef<HTMLDivElement | null>(null)
   const initialScrollSessionRef = useRef<string | null>(null)
   const canSend = agent.phase !== 'ended'
 
@@ -365,6 +371,61 @@ export function SessionChatModal({ agent, onClose, onLoadTranscript, onSendMessa
     if (distance < 240) el.scrollTop = el.scrollHeight
   }, [entries])
 
+  useLayoutEffect(() => {
+    const modal = modalRef.current
+    const header = headerRef.current
+    const approvals = approvalsRef.current
+    const transcript = transcriptRef.current
+    const composer = composerRef.current
+    if (!modal || !header || !transcript || !composer) return
+
+    const maxHeight = window.innerHeight - 32
+    const naturalHeight =
+      header.offsetHeight +
+      (approvals?.offsetHeight ?? 0) +
+      transcript.scrollHeight +
+      composer.offsetHeight
+    const nextHeight = Math.round(Math.min(maxHeight, Math.max(560, naturalHeight * 1.1)))
+
+    setModalHeight(prev => (prev === nextHeight ? prev : nextHeight))
+  }, [agent.sessionId, agent.phase, entries, loading, sending, error, draft])
+
+  useEffect(() => {
+    const transcript = transcriptRef.current
+    if (!transcript) return
+
+    const recompute = () => {
+      const modal = modalRef.current
+      const header = headerRef.current
+      const approvals = approvalsRef.current
+      const composer = composerRef.current
+      if (!modal || !header || !transcript || !composer) return
+
+      const maxHeight = window.innerHeight - 32
+      const naturalHeight =
+        header.offsetHeight +
+        (approvals?.offsetHeight ?? 0) +
+        transcript.scrollHeight +
+        composer.offsetHeight
+      const nextHeight = Math.round(Math.min(maxHeight, Math.max(560, naturalHeight * 1.1)))
+      setModalHeight(prev => (prev === nextHeight ? prev : nextHeight))
+    }
+
+    recompute()
+
+    const observer = new ResizeObserver(recompute)
+    observer.observe(transcript)
+    if (headerRef.current) observer.observe(headerRef.current)
+    if (approvalsRef.current) observer.observe(approvalsRef.current)
+    if (composerRef.current) observer.observe(composerRef.current)
+
+    window.addEventListener('resize', recompute)
+    return () => {
+      observer.disconnect()
+      window.removeEventListener('resize', recompute)
+    }
+  }, [agent.sessionId, agent.phase, entries, loading, sending, error, draft])
+
   async function submit() {
     const message = draft.trim()
     if (!message || sending || !canSend) return
@@ -399,8 +460,12 @@ export function SessionChatModal({ agent, onClose, onLoadTranscript, onSendMessa
         if (e.target === e.currentTarget) onClose()
       }}
     >
-      <div className="chat-modal">
-        <div className="chat-modal-head">
+      <div
+        className="chat-modal"
+        ref={modalRef}
+        style={modalHeight ? { height: `${modalHeight}px` } : undefined}
+      >
+        <div className="chat-modal-head" ref={headerRef}>
           <div>
             <div className="chat-modal-kicker">SESSION CHAT</div>
             <div className="chat-modal-title">{agent.displayTitle}</div>
@@ -413,24 +478,28 @@ export function SessionChatModal({ agent, onClose, onLoadTranscript, onSendMessa
           <button className="detail-close" onClick={onClose}>ESC</button>
         </div>
 
-        <PendingApprovals agent={agent} onApprovalDecision={onApprovalDecision} />
-
-        <div className="chat-stream" ref={scrollerRef}>
-          {loading && <div className="chat-empty">LOADING TRANSCRIPT...</div>}
-          {!loading && entries.length === 0 && <div className="chat-empty">NO TRANSCRIPT EVENTS YET</div>}
-          {entries.map(entry => (
-            <ChatBubble
-              key={entry.id}
-              entry={entry}
-              agent={agent}
-              showApprovalActions={false}
-              onApprovalDecision={onApprovalDecision}
-            />
-          ))}
-          <SessionActivityPhase phase={agent.phase} />
+        <div ref={approvalsRef}>
+          <PendingApprovals agent={agent} onApprovalDecision={onApprovalDecision} />
         </div>
 
-        <div className="chat-compose">
+        <div className="chat-stream" ref={scrollerRef}>
+          <div className="chat-stream-inner" ref={transcriptRef}>
+            {loading && <div className="chat-empty">LOADING TRANSCRIPT...</div>}
+            {!loading && entries.length === 0 && <div className="chat-empty">NO TRANSCRIPT EVENTS YET</div>}
+            {entries.map(entry => (
+              <ChatBubble
+                key={entry.id}
+                entry={entry}
+                agent={agent}
+                showApprovalActions={false}
+                onApprovalDecision={onApprovalDecision}
+              />
+            ))}
+            <SessionActivityPhase phase={agent.phase} />
+          </div>
+        </div>
+
+        <div className="chat-compose" ref={composerRef}>
           {error && <div className="chat-error">{error}</div>}
           {!canSend && <div className="chat-error">This session has ended. Transcript is read-only.</div>}
           <textarea
