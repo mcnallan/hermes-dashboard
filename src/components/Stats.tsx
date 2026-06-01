@@ -1,42 +1,28 @@
 import { type Agent, formatTokens } from '../data'
 
-export function HeroSection({ agents }: { agents: Agent[] }) {
-  const active = agents.filter(a => a.phase === 'processing').length
+export function DashboardStats({ agents }: { agents: Agent[] }) {
   const totalTokens = agents.reduce((sum, a) => sum + a.tokenCount, 0)
   const totalTools = agents.reduce((sum, a) => {
     let c = a.recentTools.length + a.toolsInProgress.length
     for (const s of a.subagents) c += s.tools.length
     return sum + c
   }, 0)
-  const totalLines = agents.reduce((sum, a) => sum + a.linesChanged, 0)
-  const totalFiles = agents.reduce((sum, a) => sum + a.filesModified, 0)
 
   return (
-    <div className="hero">
-      <div className="hero-number">{active}</div>
-      <div className="hero-meta">
-        <span className="hero-label">AGENTS PROCESSING</span>
-        <div className="hero-stats">
-          <div className="hero-stat">
-            <span className="hero-stat-value">{agents.length}</span>
-            <span className="hero-stat-label">TOTAL</span>
-          </div>
-          <div className="hero-stat">
-            <span className="hero-stat-value">{formatTokens(totalTokens)}</span>
-            <span className="hero-stat-label">TOKENS</span>
-          </div>
-          <div className="hero-stat">
-            <span className="hero-stat-value">{totalTools}</span>
-            <span className="hero-stat-label">TOOL CALLS</span>
-          </div>
-          <div className="hero-stat">
-            <span className="hero-stat-value">{totalFiles}</span>
-            <span className="hero-stat-label">FILES</span>
-          </div>
-          <div className="hero-stat">
-            <span className="hero-stat-value">{totalLines.toLocaleString()}</span>
-            <span className="hero-stat-label">LINES</span>
-          </div>
+    <div className="dashboard-stats" aria-label="Agents processing summary">
+      <span className="dashboard-stats-label">AGENTS PROCESSING</span>
+      <div className="dashboard-stats-values">
+        <div className="dashboard-stat">
+          <span className="dashboard-stat-value">{agents.length}</span>
+          <span className="dashboard-stat-label">TOTAL</span>
+        </div>
+        <div className="dashboard-stat">
+          <span className="dashboard-stat-value">{formatTokens(totalTokens)}</span>
+          <span className="dashboard-stat-label">TOKENS</span>
+        </div>
+        <div className="dashboard-stat">
+          <span className="dashboard-stat-value">{totalTools}</span>
+          <span className="dashboard-stat-label">TOOL CALLS</span>
         </div>
       </div>
     </div>

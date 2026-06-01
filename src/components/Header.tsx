@@ -1,4 +1,5 @@
 import { type Agent } from '../data'
+import { DashboardStats } from './Stats'
 
 interface Props {
   agents: Agent[]
@@ -22,6 +23,9 @@ export function Header({ agents, connected, theme, onThemeToggle, onWiki }: Prop
         >
           {connected ? 'LIVE' : 'MOCK'}
         </span>
+      </div>
+      <div className="header-center">
+        <DashboardStats agents={agents} />
       </div>
       <div className="header-right">
         {onWiki && <button className="header-wiki-btn" onClick={onWiki}>WIKI</button>}

@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { type Agent } from './data'
 import { useHermes } from './useHermes'
 import { Header } from './components/Header'
-import { HeroSection, AttentionBanner } from './components/Stats'
+import { AttentionBanner } from './components/Stats'
 import { AgentList } from './components/AgentList'
 import { AgentDetail } from './components/AgentDetail'
 import { SessionChatModal } from './components/SessionChatModal'
@@ -70,7 +70,6 @@ export default function App() {
         onThemeToggle={() => setTheme(theme === 'light' ? 'dark' : 'light')}
         onWiki={() => setView('wiki')}
       />
-      <HeroSection agents={agents} />
       <AttentionBanner agents={agents} />
 
       <div className="main">
