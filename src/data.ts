@@ -24,6 +24,19 @@ export interface Subagent {
   startTime: Date
 }
 
+export interface PendingApproval {
+  id: string
+  sessionKey?: string
+  command: string
+  description: string
+  surface: string
+  tool?: string
+  createdAt: Date
+  status: 'pending' | 'submitted' | 'approved' | 'denied' | 'timeout' | 'error'
+  submittedChoice?: 'once' | 'deny'
+  error?: string
+}
+
 export interface Agent {
   sessionId: string
   displayTitle: string
@@ -41,6 +54,7 @@ export interface Agent {
   recentTools: ToolCall[]
   transcript?: ChatEntry[]
   subagents: Subagent[]
+  approvals?: PendingApproval[]
   approvalId?: string
   approvalTool?: string
   approvalInput?: string

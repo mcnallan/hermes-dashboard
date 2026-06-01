@@ -62,9 +62,12 @@ interface ActivityEntry {
 
 interface PendingApproval {
   id: string
+  sessionKey?: string
   command: string
   description: string
   surface: string
+  tool?: string
+  createdAt: Date
   status: 'pending' | 'submitted' | 'approved' | 'denied' | 'timeout' | 'error'
   submittedChoice?: 'once' | 'deny'
   error?: string
@@ -101,7 +104,7 @@ interface Session {
   turnCount: number
   filesModified: Set<string>
   firstUserMessage?: string
-  pendingApproval?: PendingApproval
+  pendingApprovals: Map<string, PendingApproval>
   usage: UsageState
   model?: string
   provider?: string
@@ -112,6 +115,7 @@ interface Session {
 const sessions = new Map<string, Session>()
 const activity: ActivityEntry[] = []
 const approvalSessions = new Map<string, string>()
+const sessionKeys = new Map<string, string>()
 let counter = 0
 
 function emptyUsage(): UsageState {
@@ -147,12 +151,16 @@ function getOrCreateSession(sessionId: string, payload: Record<string, unknown>)
       transcript: [],
       turnCount: 0,
       filesModified: new Set(),
+      pendingApprovals: new Map(),
       usage: emptyUsage(),
     }
     sessions.set(sessionId, s)
   }
   if (typeof payload.chat_socket === 'string' && payload.chat_socket.trim()) {
     s.chatSocket = payload.chat_socket.trim()
+  }
+  if (typeof payload.session_key === 'string' && payload.session_key.trim()) {
+    sessionKeys.set(payload.session_key.trim(), s.sessionId)
   }
   return s
 }
@@ -343,11 +351,23 @@ function mergeTranscriptEntries(entries: ChatEntry[]): ChatEntry[] {
 function sessionForApproval(approvalId: string): Session | null {
   if (!approvalId) return null
   for (const session of sessions.values()) {
-    if (session.pendingApproval?.id === approvalId) return session
+    if (session.pendingApprovals.has(approvalId)) return session
   }
   const sessionId = approvalSessions.get(approvalId)
   if (sessionId) return sessions.get(sessionId) || null
   return null
+}
+
+function activeApprovals(s: Session): PendingApproval[] {
+  return Array.from(s.pendingApprovals.values())
+    .filter(a => a.status === 'pending' || a.status === 'submitted' || a.status === 'error')
+    .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
+}
+
+function sessionIdForApprovalRequest(incomingId: string, payload: Record<string, unknown>): string {
+  const key = typeof payload.session_key === 'string' ? payload.session_key.trim() : ''
+  if (key) return sessionKeys.get(key) || incomingId
+  return relatedRealSession(incomingId, payload)?.sessionId || incomingId
 }
 
 function processEvent(payload: Record<string, unknown>) {
@@ -357,7 +377,7 @@ function processEvent(payload: Record<string, unknown>) {
   if (event === 'ApprovalDecisionSubmitted' || event === 'ApprovalResponse') {
     sessionId = sessionForApproval(String(payload.approval_id || ''))?.sessionId || sessionId
   } else if (event === 'ApprovalRequest') {
-    sessionId = relatedRealSession(sessionId, payload)?.sessionId || sessionId
+    sessionId = sessionIdForApprovalRequest(sessionId, payload)
   }
   const s = getOrCreateSession(sessionId, payload)
   s.lastActivity = new Date()
@@ -461,13 +481,16 @@ function processEvent(payload: Record<string, unknown>) {
       approvalSessions.set(approvalId, s.sessionId)
       dropRelatedPlaceholders(s, payload)
       s.phase = 'waiting_for_approval'
-      s.pendingApproval = {
+      s.pendingApprovals.set(approvalId, {
         id: approvalId,
+        sessionKey: typeof payload.session_key === 'string' ? payload.session_key : undefined,
         command,
         description,
         surface: String(payload.surface || ''),
+        tool: String(payload.approval_tool || 'Approval'),
+        createdAt: new Date(),
         status: 'pending',
-      }
+      })
       s.lastMessageRole = 'tool'
       s.lastToolName = String(payload.approval_tool || 'Approval')
       pushActivity(s, 'approval', approvalContent(payload), 'var(--accent)')
@@ -475,10 +498,11 @@ function processEvent(payload: Record<string, unknown>) {
     }
     case 'ApprovalDecisionSubmitted': {
       const approvalId = String(payload.approval_id || '')
-      if (approvalId && s.pendingApproval?.id === approvalId) {
+      const approval = approvalId ? s.pendingApprovals.get(approvalId) : undefined
+      if (approval) {
         const choice = String(payload.choice || '').toLowerCase()
-        s.pendingApproval.status = 'submitted'
-        s.pendingApproval.submittedChoice = choice === 'deny' ? 'deny' : 'once'
+        approval.status = 'submitted'
+        approval.submittedChoice = choice === 'deny' ? 'deny' : 'once'
       }
       pushActivity(s, 'approval', `approval submitted: ${String(payload.choice || '')}`, 'var(--warning)')
       break
@@ -486,13 +510,15 @@ function processEvent(payload: Record<string, unknown>) {
     case 'ApprovalResponse': {
       const approvalId = String(payload.approval_id || '')
       const status = approvalChoiceToStatus(payload.choice)
-      if (approvalId && s.pendingApproval?.id === approvalId) {
-        s.pendingApproval.status = status
+      const approval = approvalId ? s.pendingApprovals.get(approvalId) : undefined
+      if (approval) {
+        approval.status = status
         if (status === 'approved' || status === 'denied' || status === 'timeout') {
-          s.pendingApproval = undefined
+          s.pendingApprovals.delete(approvalId)
+          approvalSessions.delete(approvalId)
         }
       }
-      if (s.phase === 'waiting_for_approval') s.phase = 'processing'
+      if (s.phase === 'waiting_for_approval' && activeApprovals(s).length === 0) s.phase = 'processing'
       pushActivity(s, 'approval', `approval ${status}: ${approvalContent(payload)}`, status === 'approved' ? 'var(--success)' : 'var(--accent)')
       break
     }
@@ -554,8 +580,9 @@ function sendJson(res: ServerResponse, statusCode: number, data: unknown) {
 
 function findApproval(approvalId: string): { session: Session, approval: PendingApproval } | null {
   for (const session of sessions.values()) {
-    if (session.pendingApproval?.id === approvalId) {
-      return { session, approval: session.pendingApproval }
+    const approval = session.pendingApprovals.get(approvalId)
+    if (approval) {
+      return { session, approval }
     }
   }
   return null
@@ -657,8 +684,9 @@ async function approvalHandler(req: IncomingMessage, res: ServerResponse, url: s
 
   const finalStatus = choice === 'deny' ? 'denied' : 'approved'
   found.approval.status = finalStatus
-  found.session.pendingApproval = undefined
-  if (found.session.phase === 'waiting_for_approval') found.session.phase = 'processing'
+  found.session.pendingApprovals.delete(found.approval.id)
+  approvalSessions.delete(found.approval.id)
+  if (found.session.phase === 'waiting_for_approval' && activeApprovals(found.session).length === 0) found.session.phase = 'processing'
   pushActivity(found.session, 'approval', `approval ${finalStatus}: ${found.approval.command || found.approval.description || 'approval'}`, finalStatus === 'approved' ? 'var(--success)' : 'var(--accent)')
   broadcast()
   sendJson(res, 200, { ok: true, approval_id: found.approval.id, choice })
@@ -1015,35 +1043,44 @@ function displayTitle(s: Session): string {
 }
 
 function serializeState(): string {
-  const agents = Array.from(sessions.values()).map(s => ({
-    sessionId: s.sessionId, displayTitle: displayTitle(s), cwd: s.cwd, phase: s.phase,
-    lastActivity: s.lastActivity.toISOString(), createdAt: s.createdAt.toISOString(),
-    pid: s.pid, tty: s.tty || '', tmuxTarget: '', lastMessage: s.lastMessage,
-    lastMessageRole: s.lastMessageRole, lastToolName: s.lastToolName,
-    toolsInProgress: Array.from(s.toolsInProgress.values()).map(t => ({ ...t, timestamp: t.timestamp.toISOString() })),
-    recentTools: s.recentTools.map(t => ({ ...t, timestamp: t.timestamp.toISOString() })),
-    transcript: serializeTranscript(s.transcript),
-    approvalId: s.pendingApproval?.id,
-    approvalTool: s.pendingApproval ? s.lastToolName || 'Approval' : undefined,
-    approvalInput: s.pendingApproval?.command,
-    approvalDescription: s.pendingApproval?.description,
-    approvalStatus: s.pendingApproval?.status,
-    approvalError: s.pendingApproval?.error,
-    subagents: [],
-    tokenCount: s.usage.totalTokens,
-    inputTokens: s.usage.inputTokens,
-    outputTokens: s.usage.outputTokens,
-    cacheReadTokens: s.usage.cacheReadTokens,
-    cacheWriteTokens: s.usage.cacheWriteTokens,
-    reasoningTokens: s.usage.reasoningTokens,
-    contextTokenCount: s.usage.promptTokens,
-    apiCallCount: s.usage.apiCallCount,
-    model: s.model,
-    provider: s.provider,
-    maxTokens: 1_000_000,
-    turnCount: s.turnCount,
-    filesModified: s.filesModified.size, linesChanged: 0, costUsd: s.usage.estimatedCostUsd,
-  }))
+  const agents = Array.from(sessions.values()).map(s => {
+    const approvals = activeApprovals(s)
+    const firstApproval = approvals[0]
+    return {
+      sessionId: s.sessionId, displayTitle: displayTitle(s), cwd: s.cwd, phase: s.phase,
+      lastActivity: s.lastActivity.toISOString(), createdAt: s.createdAt.toISOString(),
+      pid: s.pid, tty: s.tty || '', tmuxTarget: '', lastMessage: s.lastMessage,
+      lastMessageRole: s.lastMessageRole, lastToolName: s.lastToolName,
+      toolsInProgress: Array.from(s.toolsInProgress.values()).map(t => ({ ...t, timestamp: t.timestamp.toISOString() })),
+      recentTools: s.recentTools.map(t => ({ ...t, timestamp: t.timestamp.toISOString() })),
+      transcript: serializeTranscript(s.transcript),
+      approvals: approvals.map(a => ({
+        ...a,
+        createdAt: a.createdAt.toISOString(),
+        tool: a.tool || s.lastToolName || 'Approval',
+      })),
+      approvalId: firstApproval?.id,
+      approvalTool: firstApproval ? firstApproval.tool || s.lastToolName || 'Approval' : undefined,
+      approvalInput: firstApproval?.command,
+      approvalDescription: firstApproval?.description,
+      approvalStatus: firstApproval?.status,
+      approvalError: firstApproval?.error,
+      subagents: [],
+      tokenCount: s.usage.totalTokens,
+      inputTokens: s.usage.inputTokens,
+      outputTokens: s.usage.outputTokens,
+      cacheReadTokens: s.usage.cacheReadTokens,
+      cacheWriteTokens: s.usage.cacheWriteTokens,
+      reasoningTokens: s.usage.reasoningTokens,
+      contextTokenCount: s.usage.promptTokens,
+      apiCallCount: s.usage.apiCallCount,
+      model: s.model,
+      provider: s.provider,
+      maxTokens: 1_000_000,
+      turnCount: s.turnCount,
+      filesModified: s.filesModified.size, linesChanged: 0, costUsd: s.usage.estimatedCostUsd,
+    }
+  })
   return JSON.stringify({ type: 'state', agents, activityFeed: activity.slice(0, 50).map(e => ({ ...e, timestamp: e.timestamp.toISOString() })) })
 }
 

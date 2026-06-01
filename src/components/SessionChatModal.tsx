@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { type Agent, type ChatEntry, formatDuration, phaseLabel } from '../data'
+import { type Agent, type ChatEntry, type PendingApproval, formatDuration, phaseLabel } from '../data'
 
 interface Props {
   agent: Agent
@@ -220,6 +220,92 @@ function SessionActivityPhase({ phase }: { phase: Agent['phase'] }) {
   )
 }
 
+function approvalsForAgent(agent: Agent): PendingApproval[] {
+  if (agent.approvals && agent.approvals.length > 0) return agent.approvals
+  if (!agent.approvalId) return []
+  return [{
+    id: agent.approvalId,
+    command: agent.approvalInput || '',
+    description: agent.approvalDescription || '',
+    surface: '',
+    tool: agent.approvalTool || 'Approval',
+    createdAt: agent.createdAt,
+    status: agent.approvalStatus || 'pending',
+    error: agent.approvalError,
+  }]
+}
+
+function PendingApprovalCard({
+  approval,
+  index,
+  total,
+  onApprovalDecision,
+}: {
+  approval: PendingApproval
+  index: number
+  total: number
+  onApprovalDecision: (approvalId: string, decision: 'approve' | 'deny') => Promise<void>
+}) {
+  const [busy, setBusy] = useState(false)
+  const submitted = approval.status === 'submitted'
+  const disabled = busy || submitted || approval.status !== 'pending' || index > 0
+  const description = index > 0
+    ? 'Waiting for earlier approval in this session.'
+    : approval.error || approval.description || 'This action requires approval before it can continue.'
+
+  async function decide(decision: 'approve' | 'deny') {
+    if (disabled) return
+    setBusy(true)
+    try {
+      await onApprovalDecision(approval.id, decision)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="chat-tool-approval">
+      <div className="chat-tool-approval-label">
+        <span className="attention-dot" />
+        {total > 1 ? `APPROVAL ${index + 1}/${total}` : 'APPROVAL'} {approval.tool || 'Approval'} {approval.command}
+      </div>
+      <div className="chat-tool-approval-desc">{description}</div>
+      <div className="chat-tool-approval-actions">
+        <button className="btn-approve" disabled={disabled} onClick={() => void decide('approve')}>
+          {busy || submitted ? 'SENDING' : 'APPROVE'}
+        </button>
+        <button className="btn-deny" disabled={disabled} onClick={() => void decide('deny')}>
+          DENY
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function PendingApprovals({
+  agent,
+  onApprovalDecision,
+}: {
+  agent: Agent
+  onApprovalDecision: (approvalId: string, decision: 'approve' | 'deny') => Promise<void>
+}) {
+  const approvals = approvalsForAgent(agent)
+  if (agent.phase !== 'waiting_for_approval' || approvals.length === 0) return null
+  return (
+    <div className="chat-pending-approvals">
+      {approvals.map((approval, index) => (
+        <PendingApprovalCard
+          key={approval.id}
+          approval={approval}
+          index={index}
+          total={approvals.length}
+          onApprovalDecision={onApprovalDecision}
+        />
+      ))}
+    </div>
+  )
+}
+
 export function SessionChatModal({ agent, onClose, onLoadTranscript, onSendMessage, onApprovalDecision }: Props) {
   const [entries, setEntries] = useState<ChatEntry[]>([])
   const [draft, setDraft] = useState('')
@@ -229,7 +315,6 @@ export function SessionChatModal({ agent, onClose, onLoadTranscript, onSendMessa
   const scrollerRef = useRef<HTMLDivElement | null>(null)
   const initialScrollSessionRef = useRef<string | null>(null)
   const canSend = agent.phase !== 'ended'
-  const lastToolCallId = [...entries].reverse().find(entry => entry.kind === 'tool_call')?.id
 
   useEffect(() => {
     let cancelled = false
@@ -328,6 +413,8 @@ export function SessionChatModal({ agent, onClose, onLoadTranscript, onSendMessa
           <button className="detail-close" onClick={onClose}>ESC</button>
         </div>
 
+        <PendingApprovals agent={agent} onApprovalDecision={onApprovalDecision} />
+
         <div className="chat-stream" ref={scrollerRef}>
           {loading && <div className="chat-empty">LOADING TRANSCRIPT...</div>}
           {!loading && entries.length === 0 && <div className="chat-empty">NO TRANSCRIPT EVENTS YET</div>}
@@ -336,7 +423,7 @@ export function SessionChatModal({ agent, onClose, onLoadTranscript, onSendMessa
               key={entry.id}
               entry={entry}
               agent={agent}
-              showApprovalActions={entry.id === lastToolCallId && agent.phase === 'waiting_for_approval'}
+              showApprovalActions={false}
               onApprovalDecision={onApprovalDecision}
             />
           ))}

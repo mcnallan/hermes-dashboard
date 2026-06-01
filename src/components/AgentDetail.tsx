@@ -1,5 +1,6 @@
 import {
   type Agent,
+  type PendingApproval,
   type ToolCall,
   phaseLabel,
   phaseColor,
@@ -108,21 +109,35 @@ function ToolRow({ tool }: { tool: ToolCall }) {
   )
 }
 
-function approvalStatusLabel(agent: Agent) {
-  if (agent.approvalError) return agent.approvalError
-  switch (agent.approvalStatus) {
+function approvalStatusLabel(approval: PendingApproval) {
+  if (approval.error) return approval.error
+  switch (approval.status) {
     case 'submitted': return 'sending decision'
     case 'approved': return 'approved'
     case 'denied': return 'denied'
     case 'timeout': return 'timed out'
     case 'error': return 'response failed'
-    default: return agent.approvalDescription || 'command requires approval'
+    default: return approval.description || 'command requires approval'
   }
 }
 
+function approvalsForAgent(agent: Agent): PendingApproval[] {
+  if (agent.approvals && agent.approvals.length > 0) return agent.approvals
+  if (!agent.approvalId) return []
+  return [{
+    id: agent.approvalId,
+    command: agent.approvalInput || '',
+    description: agent.approvalDescription || '',
+    surface: '',
+    tool: agent.approvalTool || 'Approval',
+    createdAt: agent.createdAt,
+    status: agent.approvalStatus || 'pending',
+    error: agent.approvalError,
+  }]
+}
+
 export function AgentDetail({ agent, onClose, onOpenChat, onApprovalDecision }: Props) {
-  const approvalBusy = agent.approvalStatus === 'submitted'
-  const approvalDisabled = approvalBusy || !agent.approvalId
+  const approvals = approvalsForAgent(agent)
   const contextTokens = agent.contextTokenCount ?? agent.tokenCount
   const cacheTokens = (agent.cacheReadTokens ?? 0) + (agent.cacheWriteTokens ?? 0)
 
@@ -196,36 +211,36 @@ export function AgentDetail({ agent, onClose, onOpenChat, onApprovalDecision }: 
 
       <ContextBar agent={agent} />
 
-      {agent.phase === 'waiting_for_approval' && agent.approvalTool && (
-        <div className="approval-block">
-          <div className="approval-block-label">
-            <span className="attention-dot" />
-            PENDING APPROVAL
+      {agent.phase === 'waiting_for_approval' && approvals.map((approval, index) => {
+        const approvalBusy = approval.status === 'submitted'
+        const approvalDisabled = approvalBusy || approval.status !== 'pending' || index > 0
+        return (
+          <div className="approval-block" key={approval.id}>
+            <div className="approval-block-label">
+              <span className="attention-dot" />
+              PENDING APPROVAL {approvals.length > 1 ? `${index + 1}/${approvals.length}` : ''}
+            </div>
+            <div className="approval-block-cmd">{approval.tool || 'Approval'}: {approval.command}</div>
+            <div className="approval-block-desc">{index > 0 ? 'Waiting for earlier approval in this session.' : approvalStatusLabel(approval)}</div>
+            <div className="approval-actions">
+              <button
+                className="btn-approve"
+                disabled={approvalDisabled}
+                onClick={() => void onApprovalDecision(approval.id, 'approve').catch(console.error)}
+              >
+                {approvalBusy ? 'SENDING' : 'APPROVE'}
+              </button>
+              <button
+                className="btn-deny"
+                disabled={approvalDisabled}
+                onClick={() => void onApprovalDecision(approval.id, 'deny').catch(console.error)}
+              >
+                DENY
+              </button>
+            </div>
           </div>
-          <div className="approval-block-cmd">{agent.approvalTool}: {agent.approvalInput}</div>
-          <div className="approval-block-desc">{approvalStatusLabel(agent)}</div>
-          <div className="approval-actions">
-            <button
-              className="btn-approve"
-              disabled={approvalDisabled}
-              onClick={() => {
-                if (agent.approvalId) void onApprovalDecision(agent.approvalId, 'approve').catch(console.error)
-              }}
-            >
-              {approvalBusy ? 'SENDING' : 'APPROVE'}
-            </button>
-            <button
-              className="btn-deny"
-              disabled={approvalDisabled}
-              onClick={() => {
-                if (agent.approvalId) void onApprovalDecision(agent.approvalId, 'deny').catch(console.error)
-              }}
-            >
-              DENY
-            </button>
-          </div>
-        </div>
-      )}
+        )
+      })}
 
       <div className="last-message">
         <div className="last-message-label">LAST MESSAGE / {agent.lastMessageRole.toUpperCase()}</div>

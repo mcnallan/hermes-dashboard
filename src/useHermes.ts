@@ -23,6 +23,7 @@ function hydrateDates(raw: ServerState): { agents: Agent[]; activityFeed: Activi
     lastActivity: new Date(a.lastActivity),
     createdAt: new Date(a.createdAt),
     transcript: (a.transcript as unknown as WireChatEntry[] | undefined)?.map(e => ({ ...e, timestamp: new Date(e.timestamp) })),
+    approvals: a.approvals?.map(p => ({ ...p, createdAt: new Date(p.createdAt) })),
     toolsInProgress: a.toolsInProgress.map(t => ({ ...t, timestamp: new Date(t.timestamp) })),
     recentTools: a.recentTools.map(t => ({ ...t, timestamp: new Date(t.timestamp) })),
     subagents: a.subagents.map(s => ({

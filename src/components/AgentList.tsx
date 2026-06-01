@@ -82,6 +82,15 @@ export function AgentList({ agents, selected, onSelect }: Props) {
         {sorted.map(agent => {
           const isSelected = selected?.sessionId === agent.sessionId
           const isApproval = agent.phase === 'waiting_for_approval'
+          const approvals = agent.approvals && agent.approvals.length > 0
+            ? agent.approvals
+            : agent.approvalId
+              ? [{
+                  tool: agent.approvalTool,
+                  command: agent.approvalInput,
+                }]
+              : []
+          const firstApproval = approvals[0]
 
           return (
             <div
@@ -110,9 +119,9 @@ export function AgentList({ agents, selected, onSelect }: Props) {
                 </div>
               )}
 
-              {isApproval && agent.approvalTool && (
+              {isApproval && firstApproval && (
                 <div className="approval-inline">
-                  {agent.approvalTool}: {agent.approvalInput}
+                  {approvals.length > 1 ? `${approvals.length} approvals - ` : ''}{firstApproval.tool || 'Approval'}: {firstApproval.command}
                 </div>
               )}
 
