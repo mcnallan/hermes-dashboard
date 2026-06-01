@@ -1890,6 +1890,11 @@
   display: flex;
   flex-direction: column;
   animation: fadeIn 180ms var(--ease);
+  visibility: hidden;
+}
+
+.chat-modal.measured {
+  visibility: visible;
   transition: height 180ms var(--ease);
 }
 

@@ -308,13 +308,16 @@ function PendingApprovals({
 }
 
 export function SessionChatModal({ agent, onClose, onLoadTranscript, onSendMessage, onApprovalDecision, isMockData }: Props) {
-  const [entries, setEntries] = useState<ChatEntry[]>([])
+  const [entries, setEntries] = useState<ChatEntry[]>(() => (
+    isMockData ? mergeTranscriptEntries(agent.transcript || []) : []
+  ))
   const [draft, setDraft] = useState('')
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(!isMockData)
   const [sending, setSending] = useState(false)
   const [streamingMock, setStreamingMock] = useState(false)
   const [error, setError] = useState('')
   const [modalHeight, setModalHeight] = useState<number | null>(null)
+  const [measuredInitialHeight, setMeasuredInitialHeight] = useState(false)
   const modalRef = useRef<HTMLDivElement | null>(null)
   const headerRef = useRef<HTMLDivElement | null>(null)
   const approvalsRef = useRef<HTMLDivElement | null>(null)
@@ -329,10 +332,17 @@ export function SessionChatModal({ agent, onClose, onLoadTranscript, onSendMessa
 
   useEffect(() => {
     let cancelled = false
-    setLoading(true)
+    setLoading(!isMockData)
     setError('')
     initialScrollSessionRef.current = null
     stickToBottomRef.current = true
+
+    if (isMockData) {
+      setEntries(mergeTranscriptEntries(agent.transcript || []))
+      setLoading(false)
+      return () => { cancelled = true }
+    }
+
     onLoadTranscript(agent.sessionId)
       .then(data => {
         if (cancelled) return
@@ -352,7 +362,7 @@ export function SessionChatModal({ agent, onClose, onLoadTranscript, onSendMessa
       })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
-  }, [agent.sessionId, agent.transcript, onLoadTranscript])
+  }, [agent.sessionId, agent.transcript, isMockData, onLoadTranscript])
 
   useEffect(() => {
     const live = agent.transcript || []
@@ -400,6 +410,7 @@ export function SessionChatModal({ agent, onClose, onLoadTranscript, onSendMessa
     const nextHeight = Math.round(Math.min(maxHeight, Math.max(560, naturalHeight * 1.1)))
 
     setModalHeight(prev => (prev === nextHeight ? prev : nextHeight))
+    setMeasuredInitialHeight(true)
   }, [])
 
   const scheduleModalResize = useCallback((delayMs = 120) => {
@@ -410,7 +421,11 @@ export function SessionChatModal({ agent, onClose, onLoadTranscript, onSendMessa
     }, delayMs)
   }, [computeModalHeight])
 
-  useEffect(() => {
+  useLayoutEffect(() => {
+    if (!measuredInitialHeight) {
+      computeModalHeight()
+      return
+    }
     scheduleModalResize(entries.length > 0 ? 180 : 0)
     return () => {
       if (resizeTimerRef.current) {
@@ -418,7 +433,18 @@ export function SessionChatModal({ agent, onClose, onLoadTranscript, onSendMessa
         resizeTimerRef.current = null
       }
     }
-  }, [agent.sessionId, agent.phase, entries.length, loading, sending, error, draft, scheduleModalResize])
+  }, [
+    agent.sessionId,
+    agent.phase,
+    entries.length,
+    loading,
+    sending,
+    error,
+    draft,
+    measuredInitialHeight,
+    computeModalHeight,
+    scheduleModalResize,
+  ])
 
   useEffect(() => {
     const transcript = transcriptRef.current
@@ -592,7 +618,7 @@ export function SessionChatModal({ agent, onClose, onLoadTranscript, onSendMessa
       }}
     >
       <div
-        className="chat-modal"
+        className={`chat-modal${measuredInitialHeight ? ' measured' : ''}`}
         ref={modalRef}
         style={modalHeight ? { height: `${modalHeight}px` } : undefined}
       >

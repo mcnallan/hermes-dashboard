@@ -93,6 +93,7 @@ export default function App() {
 
       {chatAgent && (
         <SessionChatModal
+          key={chatAgent.sessionId}
           agent={chatAgent}
           onClose={() => setChatAgentId(null)}
           onLoadTranscript={getSessionTranscript}
