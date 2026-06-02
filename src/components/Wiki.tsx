@@ -2,9 +2,8 @@ import { useState, useEffect } from 'react'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import {
-  overview as mockOverview, skills as mockSkills, plugins as mockPlugins,
-  tools as defaultTools, commands, architecture, changelog,
-  mockConfig, mockMemory, mockSoul,
+  skills as mockSkills, plugins as mockPlugins,
+  tools as defaultTools, mockMemory, mockSoul,
   type WikiPlugin, type WikiSkill, type WikiTool,
 } from '../wikiData'
 
@@ -14,9 +13,8 @@ const API_HOST = window.location.hostname === 'localhost'
 const API = `http://${API_HOST}:3002/api/wiki`
 
 type Page =
-  | 'overview' | 'skills' | 'plugins' | 'tools'
-  | 'commands' | 'architecture' | 'changelog'
-  | 'config' | 'memory' | 'soul'
+  | 'skills' | 'plugins' | 'tools'
+  | 'memory' | 'soul'
   | { skill: string }
 type FilterMode = 'enabled' | 'disabled'
 
@@ -132,33 +130,29 @@ function ToolRef({ tool }: { tool: WikiTool }) {
 
 function useLiveData() {
   const [live, setLive] = useState(false)
-  const [overview, setOverview] = useState<Record<string, unknown> | null>(null)
   const [skills, setSkills] = useState<Record<string, unknown>[]>([])
   const [plugins, setPlugins] = useState<Record<string, unknown>[]>([])
-  const [config, setConfig] = useState('')
   const [memory, setMemory] = useState({ memory: '', user: '' })
   const [soul, setSoul] = useState('')
 
   useEffect(() => {
     let cancelled = false
-    fetch(API).then(r => r.json()).then(data => {
+    fetch(`${API}/skills`).then(r => r.json()).then(d => {
       if (cancelled) return
       setLive(true)
-      setOverview(data)
-      fetch(`${API}/skills`).then(r => r.json()).then(d => { if (!cancelled) setSkills(d) }).catch(() => {})
+      setSkills(d)
       fetch(`${API}/plugins`).then(r => r.json()).then(d => { if (!cancelled) setPlugins(d) }).catch(() => {})
-      fetch(`${API}/config`).then(r => r.json()).then(d => { if (!cancelled) setConfig(d.content) }).catch(() => {})
       fetch(`${API}/memory`).then(r => r.json()).then(d => { if (!cancelled) setMemory(d) }).catch(() => {})
       fetch(`${API}/soul`).then(r => r.json()).then(d => { if (!cancelled) setSoul(d.content) }).catch(() => {})
     }).catch(() => { if (!cancelled) setLive(false) })
     return () => { cancelled = true }
   }, [])
 
-  return { live, overview, skills, plugins, config, memory, soul }
+  return { live, skills, plugins, memory, soul }
 }
 
 export function Wiki({ onBack }: { onBack: () => void }) {
-  const [page, setPage] = useState<Page>('overview')
+  const [page, setPage] = useState<Page>('skills')
   const [search, setSearch] = useState('')
   const data = useLiveData()
 
@@ -166,10 +160,8 @@ export function Wiki({ onBack }: { onBack: () => void }) {
   const isLive = data.live
   const skills = (isLive && data.skills.length > 0 ? data.skills : mockSkills).map(s => ({ ...s, enabled: typeof s.enabled === 'boolean' ? s.enabled : true })) as WikiSkill[]
   const pluginList = (isLive && data.plugins.length > 0 ? data.plugins : mockPlugins).map(p => ({ ...p })) as WikiPlugin[]
-  const configContent = isLive && data.config ? data.config : mockConfig
   const memoryContent = isLive && data.memory.memory ? data.memory : mockMemory
   const soulContent = isLive && data.soul ? data.soul : mockSoul
-  const ov = (isLive && data.overview ? data.overview : mockOverview) as Record<string, unknown>
   const [skillFilter, setSkillFilter] = useState<FilterMode>('enabled')
   const [toolFilter, setToolFilter] = useState<FilterMode>('enabled')
   const [pluginFilter, setPluginFilter] = useState<FilterMode>('enabled')
@@ -203,10 +195,6 @@ export function Wiki({ onBack }: { onBack: () => void }) {
         <div className="wiki-nav-label">
           WIKI {isLive ? <span style={{ color: 'var(--success)', fontSize: 9 }}>LIVE</span> : <span style={{ color: 'var(--text-disabled)', fontSize: 9 }}>STATIC</span>}
         </div>
-        <button className={`wiki-nav-item ${activePage === 'overview' ? 'active' : ''}`} onClick={() => setPage('overview')}>Overview</button>
-        <button className={`wiki-nav-item ${activePage === 'architecture' ? 'active' : ''}`} onClick={() => setPage('architecture')}>Architecture</button>
-        <button className={`wiki-nav-item ${activePage === 'changelog' ? 'active' : ''}`} onClick={() => setPage('changelog')}>Changelog</button>
-
         <div className="wiki-nav-label">REFERENCE</div>
         <button className={`wiki-nav-item ${activePage === 'skills' || activePage === 'skill-detail' ? 'active' : ''}`} onClick={() => setPage('skills')}>
           Skills <span className="wiki-nav-count">{skills.length}</span>
@@ -217,12 +205,8 @@ export function Wiki({ onBack }: { onBack: () => void }) {
         <button className={`wiki-nav-item ${activePage === 'plugins' ? 'active' : ''}`} onClick={() => setPage('plugins')}>
           Plugins <span className="wiki-nav-count">{pluginList.length}</span>
         </button>
-        <button className={`wiki-nav-item ${activePage === 'commands' ? 'active' : ''}`} onClick={() => setPage('commands')}>
-          CLI <span className="wiki-nav-count">{commands.length}</span>
-        </button>
 
         <div className="wiki-nav-label">AGENT STATE</div>
-        <button className={`wiki-nav-item ${activePage === 'config' ? 'active' : ''}`} onClick={() => setPage('config')}>Config</button>
         <button className={`wiki-nav-item ${activePage === 'memory' ? 'active' : ''}`} onClick={() => setPage('memory')}>Memory</button>
         <button className={`wiki-nav-item ${activePage === 'soul' ? 'active' : ''}`} onClick={() => setPage('soul')}>Soul</button>
 
@@ -238,52 +222,6 @@ export function Wiki({ onBack }: { onBack: () => void }) {
       </div>
 
       <div className="wiki-content">
-        {page === 'overview' && (
-          <div className="wiki-overview">
-            <h1>Hermes Agent Wiki</h1>
-            <p className="wiki-overview-sub">
-              {isLive
-                ? 'Live knowledge base from your Hermes installation'
-                : 'Reference documentation for the Hermes Agent framework'
-              }
-            </p>
-            <div className="wiki-stat-grid">
-              <div className="wiki-stat-card" onClick={() => setPage('skills')}>
-                <span className="wiki-stat-num">{Number(ov.skillCount || skills.length)}</span>
-                <span className="wiki-stat-label">SKILLS</span>
-              </div>
-              <div className="wiki-stat-card" onClick={() => setPage('plugins')}>
-                <span className="wiki-stat-num">{Number(ov.pluginCount || pluginList.length)}</span>
-                <span className="wiki-stat-label">PLUGINS</span>
-              </div>
-              <div className="wiki-stat-card" onClick={() => setPage('tools')}>
-                <span className="wiki-stat-num">{defaultTools.length}</span>
-                <span className="wiki-stat-label">TOOLS</span>
-              </div>
-              <div className="wiki-stat-card">
-                <span className="wiki-stat-num">{isLive ? 'YES' : String((ov as Record<string, unknown>).sessionCount || 0)}</span>
-                <span className="wiki-stat-label">{isLive ? 'CONNECTED' : 'SESSIONS'}</span>
-              </div>
-            </div>
-            {categories.length > 0 && (
-              <>
-                <h2>Skill Categories</h2>
-                <div className="wiki-cat-grid">
-                  {categories.map(c => {
-                    const count = skills.filter(s => String(s.category) === c).length
-                    return (
-                      <div key={c} className="wiki-cat-card" onClick={() => { setSearch(c); setPage('skills') }}>
-                        <span className="wiki-cat-name">{c}</span>
-                        <span className="wiki-cat-count">{count}</span>
-                      </div>
-                    )
-                  })}
-                </div>
-              </>
-            )}
-          </div>
-        )}
-
         {page === 'skills' && (
           <div>
               <div className="wiki-page-header">
@@ -404,26 +342,6 @@ export function Wiki({ onBack }: { onBack: () => void }) {
           </div>
         )}
 
-        {page === 'commands' && (
-          <div>
-            <h1>CLI Reference</h1>
-            <div className="wiki-cmd-list">
-              {commands.map(c => (
-                <div key={c.command} className="wiki-cmd-card">
-                  <div className="wiki-cmd-name">{c.command}</div>
-                  <div className="wiki-cmd-desc">{c.description}</div>
-                  <div className="wiki-cmd-flags">
-                    {c.flags.map(f => <code key={f} className="wiki-cmd-flag">{f}</code>)}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {page === 'architecture' && <Md content={architecture} />}
-        {page === 'changelog' && <Md content={changelog} />}
-        {page === 'config' && <div><h1>Configuration</h1><pre className="wiki-code">{configContent}</pre></div>}
         {page === 'memory' && <div><h1>Memory</h1><h2>Agent Memory</h2><Md content={memoryContent.memory} /><h2 style={{ marginTop: 32 }}>User Profile</h2><Md content={memoryContent.user} /></div>}
         {page === 'soul' && <div><h1>Soul</h1><Md content={soulContent} /></div>}
       </div>

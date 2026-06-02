@@ -1249,31 +1249,12 @@ function scanPlugins() {
 }
 
 function wikiHandler(url: string): unknown {
-  if (url === '/api/wiki') {
-    const skills = scanSkills()
-    const plugins = scanPlugins()
-    const categories = [...new Set(skills.map(s => String(s.category)).filter(Boolean))]
-    return {
-      skillCount: skills.length,
-      pluginCount: plugins.length,
-      categories,
-      hasConfig: existsSync(join(HERMES_HOME, 'config.yaml')),
-      hasMemory: existsSync(join(HERMES_HOME, 'memories', 'MEMORY.md')),
-      hasSoul: existsSync(join(HERMES_HOME, 'SOUL.md')),
-    }
-  }
   if (url === '/api/wiki/skills') return scanSkills()
   if (url.startsWith('/api/wiki/skills/')) {
     const name = decodeURIComponent(url.slice('/api/wiki/skills/'.length))
     return scanSkills().find(s => s.name === name) || null
   }
   if (url === '/api/wiki/plugins') return scanPlugins()
-  if (url === '/api/wiki/config') {
-    let cfg = readSafe(join(HERMES_HOME, 'config.yaml')) || '# No config found'
-    // redact anything that looks like a secret
-    cfg = cfg.replace(/(key|token|secret|password|credential|auth)([^:\n]*:\s*).+/gi, '$1$2[REDACTED]')
-    return { content: cfg }
-  }
   if (url === '/api/wiki/memory') return {
     memory: readSafe(join(HERMES_HOME, 'memories', 'MEMORY.md')) || '# No agent memory yet',
     user: readSafe(join(HERMES_HOME, 'memories', 'USER.md')) || '# No user profile yet',
