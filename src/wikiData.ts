@@ -29,6 +29,7 @@ export interface WikiTool {
   category: string
   params: { name: string; type: string; required: boolean; description: string }[]
   enabled?: boolean
+  state?: string
 }
 
 export const skills: WikiSkill[] = [

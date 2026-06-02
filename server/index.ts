@@ -1248,6 +1248,22 @@ function scanPlugins() {
   return [...results.values()].sort((a, b) => String(a.name).localeCompare(String(b.name)))
 }
 
+function scanToolsets() {
+  const config = wikiConfig()
+  const platform = (process.env.HERMES_PLATFORM || process.env.HERMES_SESSION_PLATFORM || 'cli').trim()
+  const platformToolsets = config.platform_toolsets && typeof config.platform_toolsets === 'object' && !Array.isArray(config.platform_toolsets)
+    ? (config.platform_toolsets as Record<string, unknown>)[platform]
+    : undefined
+  const enabled = new Set(toStringList(platformToolsets ?? config.toolsets))
+  const agentCfg = config.agent && typeof config.agent === 'object' && !Array.isArray(config.agent)
+    ? config.agent as Record<string, unknown>
+    : {}
+  for (const disabled of toStringList(agentCfg.disabled_toolsets)) {
+    enabled.delete(disabled)
+  }
+  return { platform, enabled: [...enabled].sort() }
+}
+
 function wikiHandler(url: string): unknown {
   if (url === '/api/wiki/skills') return scanSkills()
   if (url.startsWith('/api/wiki/skills/')) {
@@ -1255,6 +1271,7 @@ function wikiHandler(url: string): unknown {
     return scanSkills().find(s => s.name === name) || null
   }
   if (url === '/api/wiki/plugins') return scanPlugins()
+  if (url === '/api/wiki/toolsets') return scanToolsets()
   if (url === '/api/wiki/memory') return {
     memory: readSafe(join(HERMES_HOME, 'memories', 'MEMORY.md')) || '# No agent memory yet',
     user: readSafe(join(HERMES_HOME, 'memories', 'USER.md')) || '# No user profile yet',

@@ -29,6 +29,38 @@ type WikiStatefulItem = {
   state?: string
 }
 
+type WikiToolsetState = {
+  platform: string
+  enabled: string[]
+}
+
+const TOOL_NAME_TOOLSETS: Record<string, string> = {
+  delegate_task: 'delegation',
+  mixture_of_agents: 'moa',
+  execute_code: 'code_execution',
+  vision_analyze: 'vision',
+  image_generate: 'image_gen',
+  text_to_speech: 'tts',
+}
+
+const TOOL_CATEGORY_TOOLSETS: Record<string, string> = {
+  'File Operations': 'file',
+  Terminal: 'terminal',
+  Web: 'web',
+  Browser: 'browser',
+  'Memory & Planning': 'memory',
+  'Smart Home': 'homeassistant',
+  Messaging: 'messaging',
+  Scheduling: 'cronjob',
+}
+
+function toolToolset(tool: WikiTool) {
+  if (TOOL_NAME_TOOLSETS[tool.name]) return TOOL_NAME_TOOLSETS[tool.name]
+  if (tool.name === 'session_search') return 'session_search'
+  if (tool.name === 'todo') return 'todo'
+  return TOOL_CATEGORY_TOOLSETS[tool.category] || ''
+}
+
 function isEnabledItem(item: WikiStatefulItem) {
   if (typeof item.enabled === 'boolean') return item.enabled
   if (typeof item.state === 'string') return item.state === 'enabled'
@@ -132,6 +164,7 @@ function useLiveData() {
   const [live, setLive] = useState(false)
   const [skills, setSkills] = useState<Record<string, unknown>[]>([])
   const [plugins, setPlugins] = useState<Record<string, unknown>[]>([])
+  const [toolsets, setToolsets] = useState<WikiToolsetState | null>(null)
   const [memory, setMemory] = useState({ memory: '', user: '' })
   const [soul, setSoul] = useState('')
 
@@ -142,13 +175,14 @@ function useLiveData() {
       setLive(true)
       setSkills(d)
       fetch(`${API}/plugins`).then(r => r.json()).then(d => { if (!cancelled) setPlugins(d) }).catch(() => {})
+      fetch(`${API}/toolsets`).then(r => r.json()).then(d => { if (!cancelled) setToolsets(d) }).catch(() => {})
       fetch(`${API}/memory`).then(r => r.json()).then(d => { if (!cancelled) setMemory(d) }).catch(() => {})
       fetch(`${API}/soul`).then(r => r.json()).then(d => { if (!cancelled) setSoul(d.content) }).catch(() => {})
     }).catch(() => { if (!cancelled) setLive(false) })
     return () => { cancelled = true }
   }, [])
 
-  return { live, skills, plugins, memory, soul }
+  return { live, skills, plugins, toolsets, memory, soul }
 }
 
 export function Wiki({ onBack }: { onBack: () => void }) {
@@ -160,6 +194,16 @@ export function Wiki({ onBack }: { onBack: () => void }) {
   const isLive = data.live
   const skills = (isLive && data.skills.length > 0 ? data.skills : mockSkills).map(s => ({ ...s, enabled: typeof s.enabled === 'boolean' ? s.enabled : true })) as WikiSkill[]
   const pluginList = (isLive && data.plugins.length > 0 ? data.plugins : mockPlugins).map(p => ({ ...p })) as WikiPlugin[]
+  const enabledToolsets = new Set(data.toolsets?.enabled || [])
+  const tools = defaultTools.map(tool => {
+    const toolset = toolToolset(tool)
+    if (isLive && data.toolsets && toolset) {
+      const enabled = enabledToolsets.has(toolset)
+      return { ...tool, enabled, state: enabled ? 'enabled' : 'disabled' }
+    }
+    const enabled = isEnabledItem(tool)
+    return { ...tool, enabled, state: enabled ? 'enabled' : 'disabled' }
+  }) as WikiTool[]
   const memoryContent = isLive && data.memory.memory ? data.memory : mockMemory
   const soulContent = isLive && data.soul ? data.soul : mockSoul
   const [skillFilter, setSkillFilter] = useState<FilterMode>('enabled')
@@ -180,8 +224,8 @@ export function Wiki({ onBack }: { onBack: () => void }) {
 
   const categories = [...new Set(skills.map(s => String(s.category || '')).filter(Boolean))]
   const visibleTools = (toolFilter === 'enabled'
-    ? defaultTools.filter(t => isEnabledItem(t))
-    : defaultTools.filter(t => !isEnabledItem(t)))
+    ? tools.filter(t => isEnabledItem(t))
+    : tools.filter(t => !isEnabledItem(t)))
   const visibleToolCategories = [...new Set(visibleTools.map(t => t.category))]
   const visiblePlugins = (pluginFilter === 'enabled'
     ? pluginList.filter(p => isEnabledItem(p))
@@ -200,7 +244,7 @@ export function Wiki({ onBack }: { onBack: () => void }) {
           Skills <span className="wiki-nav-count">{skills.length}</span>
         </button>
         <button className={`wiki-nav-item ${activePage === 'tools' ? 'active' : ''}`} onClick={() => setPage('tools')}>
-          Tools <span className="wiki-nav-count">{defaultTools.length}</span>
+          Tools <span className="wiki-nav-count">{tools.length}</span>
         </button>
         <button className={`wiki-nav-item ${activePage === 'plugins' ? 'active' : ''}`} onClick={() => setPage('plugins')}>
           Plugins <span className="wiki-nav-count">{pluginList.length}</span>
