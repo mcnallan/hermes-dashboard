@@ -6,6 +6,7 @@ import { join } from 'path'
 import { homedir } from 'os'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
+import { load as yamlLoad } from 'js-yaml'
 
 const SOCKET_PATH = '/tmp/hermes-dashboard.sock'
 const APPROVAL_SOCKET_PATH = '/tmp/hermes-dashboard-approval.sock'
@@ -1109,9 +1110,59 @@ function parseFrontmatter(content: string) {
   return { meta, body: m[2] }
 }
 
+function parseYaml(content: string): Record<string, unknown> {
+  try {
+    const parsed = yamlLoad(content)
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {}
+  } catch {
+    return {}
+  }
+}
+
+function toStringList(value: unknown): string[] {
+  if (!value) return []
+  if (Array.isArray(value)) return value.map(v => String(v).trim()).filter(Boolean)
+  if (typeof value === 'string') {
+    return value
+      .split(',')
+      .map(v => v.trim())
+      .filter(Boolean)
+  }
+  return [String(value).trim()].filter(Boolean)
+}
+
+function wikiConfig() {
+  const raw = readSafe(join(HERMES_HOME, 'config.yaml'))
+  return parseYaml(raw)
+}
+
+function skillDisabledNames(config: Record<string, unknown>): Set<string> {
+  const skillsCfg = config.skills && typeof config.skills === 'object' && !Array.isArray(config.skills)
+    ? config.skills as Record<string, unknown>
+    : {}
+  const platform = (process.env.HERMES_PLATFORM || process.env.HERMES_SESSION_PLATFORM || 'cli').trim()
+  const platformDisabled = skillsCfg.platform_disabled && typeof skillsCfg.platform_disabled === 'object' && !Array.isArray(skillsCfg.platform_disabled)
+    ? (skillsCfg.platform_disabled as Record<string, unknown>)[platform]
+    : undefined
+  const disabled = platformDisabled ?? skillsCfg.disabled
+  return new Set(toStringList(disabled))
+}
+
+function pluginStateSets(config: Record<string, unknown>) {
+  const pluginsCfg = config.plugins && typeof config.plugins === 'object' && !Array.isArray(config.plugins)
+    ? config.plugins as Record<string, unknown>
+    : {}
+  return {
+    enabled: new Set(toStringList(pluginsCfg.enabled)),
+    disabled: new Set(toStringList(pluginsCfg.disabled)),
+  }
+}
+
 function scanSkills() {
   const dir = join(HERMES_HOME, 'skills')
   if (!existsSync(dir)) return []
+  const config = wikiConfig()
+  const disabledNames = skillDisabledNames(config)
   const results: Record<string, unknown>[] = []
   for (const entry of readdirSync(dir)) {
     const p = join(dir, entry)
@@ -1119,7 +1170,8 @@ function scanSkills() {
     const skillMd = join(p, 'SKILL.md')
     if (existsSync(skillMd)) {
       const { meta, body } = parseFrontmatter(readSafe(skillMd))
-      results.push({ name: meta.name || entry, category: '', ...meta, body })
+      const name = String(meta.name || entry)
+      results.push({ name, category: '', ...meta, body, enabled: !disabledNames.has(name) })
       continue
     }
     // category dir
@@ -1129,7 +1181,8 @@ function scanSkills() {
       const sm = join(sp, 'SKILL.md')
       if (existsSync(sm)) {
         const { meta, body } = parseFrontmatter(readSafe(sm))
-        results.push({ name: meta.name || sub, category: entry, ...meta, body })
+        const name = String(meta.name || sub)
+        results.push({ name, category: entry, ...meta, body, enabled: !disabledNames.has(name) })
       }
     }
   }
@@ -1139,15 +1192,35 @@ function scanSkills() {
 function scanPlugins() {
   const dir = join(HERMES_HOME, 'plugins')
   if (!existsSync(dir)) return []
-  const results: Record<string, unknown>[] = []
+  const config = wikiConfig()
+  const { enabled, disabled } = pluginStateSets(config)
+  const results = new Map<string, Record<string, unknown>>()
   for (const entry of readdirSync(dir)) {
     const p = join(dir, entry)
-    if (!statSync(p).isDirectory() || entry.endsWith('.disabled')) continue
+    if (!statSync(p).isDirectory()) continue
+    const dirName = entry.endsWith('.disabled') ? entry.replace(/\.disabled$/, '') : entry
     const yaml = join(p, 'plugin.yaml')
-    const manifest = existsSync(yaml) ? parseFrontmatter('---\n' + readSafe(yaml) + '\n---\n').meta : {}
-    results.push({ name: entry, ...manifest })
+    const yml = join(p, 'plugin.yml')
+    const manifest = existsSync(yaml)
+      ? parseYaml(readSafe(yaml))
+      : existsSync(yml)
+        ? parseYaml(readSafe(yml))
+        : {}
+    const manifestName = typeof manifest.name === 'string' && manifest.name.trim()
+      ? manifest.name.trim()
+      : ''
+    const name = manifestName || dirName
+    const stateKeys = new Set([dirName, name].filter(Boolean))
+    const explicitDisabled = entry.endsWith('.disabled') || [...stateKeys].some(key => disabled.has(key))
+    const explicitEnabled = [...stateKeys].some(key => enabled.has(key))
+    const state: 'enabled' | 'disabled' | 'not_enabled' = explicitDisabled ? 'disabled' : explicitEnabled ? 'enabled' : 'not_enabled'
+    const record = { ...manifest, name, enabled: state === 'enabled', state }
+    const current = results.get(name)
+    if (!current || current.state === 'not_enabled' || state === 'disabled') {
+      results.set(name, record)
+    }
   }
-  return results
+  return [...results.values()].sort((a, b) => String(a.name).localeCompare(String(b.name)))
 }
 
 function wikiHandler(url: string): unknown {

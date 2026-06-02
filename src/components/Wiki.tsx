@@ -5,7 +5,7 @@ import {
   overview as mockOverview, skills as mockSkills, plugins as mockPlugins,
   tools as defaultTools, commands, architecture, changelog,
   mockConfig, mockMemory, mockSoul,
-  type WikiTool,
+  type WikiPlugin, type WikiSkill, type WikiTool,
 } from '../wikiData'
 
 const API_HOST = window.location.hostname === 'localhost'
@@ -18,6 +18,7 @@ type Page =
   | 'commands' | 'architecture' | 'changelog'
   | 'config' | 'memory' | 'soul'
   | { skill: string }
+type FilterMode = 'enabled' | 'disabled'
 
 function Md({ content }: { content: string }) {
   const raw = marked.parse(content, { async: false }) as string
@@ -25,18 +26,74 @@ function Md({ content }: { content: string }) {
   return <div className="wiki-md" dangerouslySetInnerHTML={{ __html: html }} />
 }
 
-function SkillCard({ skill, onClick }: { skill: Record<string, unknown>; onClick: () => void }) {
+type WikiStatefulItem = {
+  enabled?: boolean
+  state?: string
+}
+
+function isEnabledItem(item: WikiStatefulItem) {
+  if (typeof item.enabled === 'boolean') return item.enabled
+  if (typeof item.state === 'string') return item.state === 'enabled'
+  return true
+}
+
+function itemStateLabel(item: WikiStatefulItem) {
+  if (typeof item.state === 'string' && item.state.trim()) {
+    return item.state.replace(/_/g, ' ').toUpperCase()
+  }
+  return isEnabledItem(item) ? 'ENABLED' : 'DISABLED'
+}
+
+function FilterToggle({
+  mode,
+  noun,
+  onToggle,
+}: {
+  mode: FilterMode
+  noun: string
+  onToggle: () => void
+}) {
+  const nextMode = mode === 'enabled' ? 'disabled' : 'enabled'
+  const label = mode.toUpperCase()
+  return (
+    <button
+      className="theme-toggle wiki-filter-toggle"
+      type="button"
+      onClick={onToggle}
+      aria-pressed={mode === 'enabled'}
+      aria-label={`Currently showing ${mode} ${noun}. Click to show ${nextMode} ${noun}.`}
+      title={`Currently showing ${mode} ${noun}. Click to show ${nextMode} ${noun}.`}
+    >
+      {label}
+    </button>
+  )
+}
+
+function StateBadge({ item }: { item: WikiStatefulItem }) {
+  const enabled = isEnabledItem(item)
+  return (
+    <span className={`wiki-state-badge ${enabled ? 'enabled' : 'disabled'}`}>
+      {itemStateLabel(item)}
+    </span>
+  )
+}
+
+function SkillCard({ skill, onClick }: { skill: WikiSkill; onClick: () => void }) {
   const name = String(skill.name || '')
   const category = String(skill.category || '')
   const description = String(skill.description || '')
   const platforms = String(skill.platforms || '').replace(/[[\]]/g, '').split(',').map(s => s.trim()).filter(Boolean)
   const tags = String(skill.tags || skill.metadata || '').replace(/[[\]]/g, '').split(',').map(s => s.trim()).filter(Boolean).slice(0, 4)
+  const enabled = isEnabledItem(skill)
 
   return (
-    <div className="wiki-skill-card" onClick={onClick}>
+    <div className={`wiki-skill-card ${enabled ? '' : 'disabled'}`} onClick={onClick}>
       <div className="wiki-skill-header">
-        <span className="wiki-skill-name">{name}</span>
-        {category && <span className="wiki-skill-category">{category}</span>}
+        <div className="wiki-skill-header-main">
+          <span className="wiki-skill-name">{name}</span>
+          {category && <span className="wiki-skill-category">{category}</span>}
+        </div>
+        <StateBadge item={skill} />
       </div>
       {description && <div className="wiki-skill-desc">{description}</div>}
       <div className="wiki-skill-tags">
@@ -48,11 +105,15 @@ function SkillCard({ skill, onClick }: { skill: Record<string, unknown>; onClick
 }
 
 function ToolRef({ tool }: { tool: WikiTool }) {
+  const enabled = isEnabledItem(tool)
   return (
-    <div className="wiki-tool-card">
+    <div className={`wiki-tool-card ${enabled ? '' : 'disabled'}`}>
       <div className="wiki-tool-header">
-        <span className="wiki-tool-name">{tool.name}</span>
-        <span className="wiki-tool-cat">{tool.category}</span>
+        <div className="wiki-tool-header-main">
+          <span className="wiki-tool-name">{tool.name}</span>
+          <span className="wiki-tool-cat">{tool.category}</span>
+        </div>
+        <StateBadge item={tool} />
       </div>
       <div className="wiki-tool-desc">{tool.description}</div>
       <div className="wiki-tool-params">
@@ -103,25 +164,36 @@ export function Wiki({ onBack }: { onBack: () => void }) {
 
   // resolve live vs mock
   const isLive = data.live
-  const skills = isLive && data.skills.length > 0 ? data.skills : mockSkills.map(s => ({ ...s, body: s.body } as Record<string, unknown>))
-  const pluginList = isLive && data.plugins.length > 0 ? data.plugins : mockPlugins.map(p => ({ ...p } as Record<string, unknown>))
+  const skills = (isLive && data.skills.length > 0 ? data.skills : mockSkills).map(s => ({ ...s, enabled: typeof s.enabled === 'boolean' ? s.enabled : true })) as WikiSkill[]
+  const pluginList = (isLive && data.plugins.length > 0 ? data.plugins : mockPlugins).map(p => ({ ...p })) as WikiPlugin[]
   const configContent = isLive && data.config ? data.config : mockConfig
   const memoryContent = isLive && data.memory.memory ? data.memory : mockMemory
   const soulContent = isLive && data.soul ? data.soul : mockSoul
   const ov = (isLive && data.overview ? data.overview : mockOverview) as Record<string, unknown>
+  const [skillFilter, setSkillFilter] = useState<FilterMode>('enabled')
+  const [toolFilter, setToolFilter] = useState<FilterMode>('enabled')
+  const [pluginFilter, setPluginFilter] = useState<FilterMode>('enabled')
 
   const activePage = typeof page === 'object' ? 'skill-detail' : page
 
+  const enabledSkills = skills.filter(s => isEnabledItem(s))
+  const visibleSkills = (skillFilter === 'enabled' ? enabledSkills : skills.filter(s => !isEnabledItem(s)))
   const filteredSkills = search
-    ? skills.filter(s =>
+    ? visibleSkills.filter(s =>
         String(s.name || '').toLowerCase().includes(search.toLowerCase()) ||
         String(s.category || '').toLowerCase().includes(search.toLowerCase()) ||
         String(s.description || '').toLowerCase().includes(search.toLowerCase())
       )
-    : skills
+    : visibleSkills
 
   const categories = [...new Set(skills.map(s => String(s.category || '')).filter(Boolean))]
-  const toolCategories = [...new Set(defaultTools.map(t => t.category))]
+  const visibleTools = (toolFilter === 'enabled'
+    ? defaultTools.filter(t => isEnabledItem(t))
+    : defaultTools.filter(t => !isEnabledItem(t)))
+  const visibleToolCategories = [...new Set(visibleTools.map(t => t.category))]
+  const visiblePlugins = (pluginFilter === 'enabled'
+    ? pluginList.filter(p => isEnabledItem(p))
+    : pluginList.filter(p => !isEnabledItem(p)))
 
   return (
     <div className="wiki">
@@ -214,16 +286,28 @@ export function Wiki({ onBack }: { onBack: () => void }) {
 
         {page === 'skills' && (
           <div>
-            <div className="wiki-page-header">
-              <h1>Skills</h1>
-              <input className="wiki-search" placeholder="Search skills..." value={search} onChange={e => setSearch(e.target.value)} />
-            </div>
-            {search && <div className="wiki-search-info">{filteredSkills.length} of {skills.length} skills</div>}
-            <div className="wiki-skill-grid">
-              {filteredSkills.map((s, i) => (
-                <SkillCard key={`${s.category}/${s.name}-${i}`} skill={s} onClick={() => setPage({ skill: String(s.name) })} />
-              ))}
-            </div>
+              <div className="wiki-page-header">
+                <h1>Skills</h1>
+                <div className="wiki-page-header-actions">
+                  <input className="wiki-search" placeholder="Search skills..." value={search} onChange={e => setSearch(e.target.value)} />
+                <FilterToggle mode={skillFilter} noun="skills" onToggle={() => setSkillFilter(current => current === 'enabled' ? 'disabled' : 'enabled')} />
+                </div>
+              </div>
+            {search && <div className="wiki-search-info">{filteredSkills.length} of {visibleSkills.length} skills</div>}
+            {filteredSkills.length === 0 ? (
+              <div className="wiki-empty-state">
+                {search
+                  ? `No ${skillFilter} skills match the current search.`
+                  : `No ${skillFilter} skills available.`
+                }
+              </div>
+            ) : (
+              <div className="wiki-skill-grid">
+                {filteredSkills.map((s, i) => (
+                  <SkillCard key={`${s.category}/${s.name}-${i}`} skill={s} onClick={() => setPage({ skill: String(s.name) })} />
+                ))}
+              </div>
+            )}
           </div>
         )}
 
@@ -261,43 +345,62 @@ export function Wiki({ onBack }: { onBack: () => void }) {
 
         {page === 'tools' && (
           <div>
-            <h1>Tool Reference</h1>
-            {toolCategories.map(cat => (
-              <div key={cat}>
-                <h2>{cat}</h2>
-                <div className="wiki-tool-list">
-                  {defaultTools.filter(t => t.category === cat).map(t => <ToolRef key={t.name} tool={t} />)}
-                </div>
+            <div className="wiki-page-header">
+              <h1>Tool Reference</h1>
+              <div className="wiki-page-header-actions">
+                <FilterToggle mode={toolFilter} noun="tools" onToggle={() => setToolFilter(current => current === 'enabled' ? 'disabled' : 'enabled')} />
               </div>
-            ))}
+            </div>
+            {visibleTools.length === 0 ? (
+              <div className="wiki-empty-state">No {toolFilter} tools available.</div>
+            ) : (
+              visibleToolCategories.map(cat => (
+                <div key={cat}>
+                  <h2>{cat}</h2>
+                  <div className="wiki-tool-list">
+                    {visibleTools.filter(t => t.category === cat).map(t => <ToolRef key={t.name} tool={t} />)}
+                  </div>
+                </div>
+              ))
+            )}
           </div>
         )}
 
         {page === 'plugins' && (
           <div>
-            <h1>Plugins</h1>
-            <div className="wiki-plugin-list">
-              {pluginList.map((p, i) => (
-                (() => {
-                const name = String(p.name || '')
-                const desc = p.description ? String(p.description) : ''
-                const ver = p.version ? String(p.version) : ''
-                const pt = p.provides_tools ? String(p.provides_tools) : ''
-                const t = p.tools ? String(p.tools) : ''
-                return (
-                  <div key={`${name}-${i}`} className="wiki-plugin-card">
-                    <div className="wiki-plugin-name">{name}</div>
-                    {desc && <div className="wiki-plugin-desc">{desc}</div>}
-                    <div className="wiki-plugin-meta">
-                      {ver && <span>v{ver}</span>}
-                      {pt && <span>tools: {pt}</span>}
-                      {t && <span>tools: {t}</span>}
-                    </div>
-                  </div>
-                )
-              })()
-              ))}
+            <div className="wiki-page-header">
+              <h1>Plugins</h1>
+              <div className="wiki-page-header-actions">
+                <FilterToggle mode={pluginFilter} noun="plugins" onToggle={() => setPluginFilter(current => current === 'enabled' ? 'disabled' : 'enabled')} />
+              </div>
             </div>
+            {visiblePlugins.length === 0 ? (
+              <div className="wiki-empty-state">No {pluginFilter} plugins available.</div>
+            ) : (
+              <div className="wiki-plugin-list">
+                {visiblePlugins.map((p, i) => {
+                  const name = String(p.name || '')
+                  const desc = p.description ? String(p.description) : ''
+                  const ver = p.version ? String(p.version) : ''
+                  const pt = p.provides_tools ? String(p.provides_tools) : ''
+                  const t = p.tools ? String(p.tools) : ''
+                  return (
+                    <div key={`${name}-${i}`} className={`wiki-plugin-card ${isEnabledItem(p) ? '' : 'disabled'}`}>
+                      <div className="wiki-plugin-header">
+                        <div className="wiki-plugin-name">{name}</div>
+                        <StateBadge item={p} />
+                      </div>
+                      {desc && <div className="wiki-plugin-desc">{desc}</div>}
+                      <div className="wiki-plugin-meta">
+                        {ver && <span>v{ver}</span>}
+                        {pt && <span>tools: {pt}</span>}
+                        {t && <span>tools: {t}</span>}
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
           </div>
         )}
 

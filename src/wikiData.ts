@@ -6,6 +6,10 @@ export interface WikiSkill {
   platforms: string[]
   tags: string[]
   body: string
+  enabled?: boolean
+  metadata?: unknown
+  author?: string
+  license?: string
 }
 
 export interface WikiPlugin {
@@ -14,6 +18,9 @@ export interface WikiPlugin {
   description: string
   tools: string[]
   hooks: string[]
+  enabled?: boolean
+  state?: 'enabled' | 'disabled' | 'not_enabled'
+  provides_tools?: unknown
 }
 
 export interface WikiTool {
@@ -21,6 +28,7 @@ export interface WikiTool {
   description: string
   category: string
   params: { name: string; type: string; required: boolean; description: string }[]
+  enabled?: boolean
 }
 
 export interface WikiCommand {
@@ -61,6 +69,7 @@ export const skills: WikiSkill[] = [
     version: '1.0.0',
     platforms: ['macos'],
     tags: ['Notes', 'Apple', 'AppleScript'],
+    enabled: false,
     body: `## When to Use\n\nUse when the user wants to interact with Apple Notes -- creating, reading, searching, or organizing notes.\n\n## How It Works\n\nUses AppleScript to interface with Notes.app. All operations are non-destructive by default.\n\n## Commands\n\n- Create note: \`osascript -e 'tell application "Notes" to make new note...'\`\n- List notes: queries the Notes database\n- Search: full-text search across all folders`,
   },
   {
@@ -115,6 +124,7 @@ export const skills: WikiSkill[] = [
     version: '1.0.0',
     platforms: ['macos', 'linux', 'windows'],
     tags: ['Jupyter', 'notebooks', 'Python', 'data analysis'],
+    enabled: false,
     body: `## When to Use\n\nUse when the user wants to create data analysis notebooks, run experiments, or visualize data.\n\n## Capabilities\n\n- Create new notebooks from scratch\n- Add/edit/delete cells\n- Execute cells and capture output\n- Export to HTML/PDF\n- Manage kernels`,
   },
   {
@@ -133,6 +143,7 @@ export const skills: WikiSkill[] = [
     version: '1.0.0',
     platforms: ['macos', 'linux', 'windows'],
     tags: ['Home Assistant', 'smart home', 'IoT', 'automation'],
+    enabled: false,
     body: `## When to Use\n\nUse when the user wants to control smart home devices: lights, thermostats, locks, media players.\n\n## Tools\n\n- \`ha_list_entities\` -- browse devices by domain or area\n- \`ha_get_state\` -- check device status\n- \`ha_list_services\` -- available actions\n- \`ha_call_service\` -- execute actions (turn_on, set_temperature, etc.)\n\n## Setup\n\nRequires \`HA_URL\` and \`HA_TOKEN\` environment variables.`,
   },
   {
@@ -142,6 +153,7 @@ export const skills: WikiSkill[] = [
     version: '0.5.0',
     platforms: ['macos', 'linux', 'windows'],
     tags: ['MoA', 'multi-agent', 'collaboration', 'reasoning'],
+    enabled: false,
     body: `## When to Use\n\nUse for complex reasoning tasks where multiple perspectives improve output quality.\n\n## How It Works\n\nBased on the Mixture-of-Agents paper (Junlin Wang et al.):\n\n1. Multiple LLMs generate initial responses\n2. Responses are aggregated and refined\n3. A final synthesis produces the output\n\n## Configuration\n\nUse the \`moa\` toolset to enable.`,
   },
   {
@@ -151,19 +163,20 @@ export const skills: WikiSkill[] = [
     version: '0.3.0',
     platforms: ['macos', 'linux'],
     tags: ['RL', 'training', 'Tinker', 'Atropos', 'WandB'],
+    enabled: false,
     body: `## When to Use\n\nUse when fine-tuning models with RL or running training experiments.\n\n## Tools\n\n- \`rl_list_environments\` -- discover available training environments\n- \`rl_select_environment\` -- choose environment\n- \`rl_edit_config\` -- modify hyperparameters\n- \`rl_start_training\` -- launch training run\n- \`rl_check_status\` -- monitor progress (WandB integration)\n- \`rl_get_results\` -- retrieve trained model outputs`,
   },
 ]
 
 export const plugins: WikiPlugin[] = [
-  { name: 'agent-monitor', version: '1.0.0', description: 'Real-time session event streaming to external monitoring dashboards and observability tools via Unix socket', tools: [], hooks: ['on_session_start', 'pre_tool_call', 'post_tool_call', 'pre_llm_call', 'post_llm_call', 'on_session_end'] },
-  { name: 'desktop-control', version: '0.1.0', description: 'Autonomous desktop control via vision model and PyAutoGUI for GUI tasks that cannot be done through terminal', tools: ['desktop_use'], hooks: [] },
-  { name: 'notification-relay', version: '0.4.0', description: 'Push notifications to Slack, Teams, or webhooks when agents need attention or complete tasks', tools: ['notify_send'], hooks: ['on_session_start', 'on_session_end'] },
-  { name: 'sandbox-runner', version: '0.3.0', description: 'Execute untrusted code in isolated Docker containers with resource limits and network policies', tools: ['sandbox_exec', 'sandbox_status'], hooks: ['pre_tool_call'] },
-  { name: 'audit-logger', version: '0.6.0', description: 'Comprehensive audit trail -- logs every tool call, LLM interaction, and approval decision to structured JSON', tools: [], hooks: ['on_session_start', 'pre_tool_call', 'post_tool_call', 'pre_llm_call', 'post_llm_call', 'on_session_end'] },
-  { name: 'cost-tracker', version: '0.2.0', description: 'Token usage and cost tracking per session, per agent, and per project with budget alerts', tools: ['cost_report'], hooks: ['post_llm_call', 'on_session_end'] },
-  { name: 'cron-scheduler', version: '0.5.0', description: 'Scheduled task execution -- run agent tasks on cron schedules with retry logic and failure alerts', tools: ['cron_create', 'cron_list', 'cron_delete'], hooks: ['on_session_start'] },
-  { name: 'gateway-bridge', version: '1.0.0', description: 'Cross-platform messaging gateway -- connects Hermes to Telegram, Discord, Slack, Signal, Email, SMS, and 8+ other platforms', tools: ['send_message'], hooks: ['on_session_start', 'on_session_end'] },
+  { name: 'agent-monitor', version: '1.0.0', description: 'Real-time session event streaming to external monitoring dashboards and observability tools via Unix socket', tools: [], hooks: ['on_session_start', 'pre_tool_call', 'post_tool_call', 'pre_llm_call', 'post_llm_call', 'on_session_end'], enabled: true, state: 'enabled' },
+  { name: 'desktop-control', version: '0.1.0', description: 'Autonomous desktop control via vision model and PyAutoGUI for GUI tasks that cannot be done through terminal', tools: ['desktop_use'], hooks: [], enabled: false, state: 'disabled' },
+  { name: 'notification-relay', version: '0.4.0', description: 'Push notifications to Slack, Teams, or webhooks when agents need attention or complete tasks', tools: ['notify_send'], hooks: ['on_session_start', 'on_session_end'], enabled: true, state: 'enabled' },
+  { name: 'sandbox-runner', version: '0.3.0', description: 'Execute untrusted code in isolated Docker containers with resource limits and network policies', tools: ['sandbox_exec', 'sandbox_status'], hooks: ['pre_tool_call'], enabled: false, state: 'not_enabled' },
+  { name: 'audit-logger', version: '0.6.0', description: 'Comprehensive audit trail -- logs every tool call, LLM interaction, and approval decision to structured JSON', tools: [], hooks: ['on_session_start', 'pre_tool_call', 'post_tool_call', 'pre_llm_call', 'post_llm_call', 'on_session_end'], enabled: false, state: 'disabled' },
+  { name: 'cost-tracker', version: '0.2.0', description: 'Token usage and cost tracking per session, per agent, and per project with budget alerts', tools: ['cost_report'], hooks: ['post_llm_call', 'on_session_end'], enabled: true, state: 'enabled' },
+  { name: 'cron-scheduler', version: '0.5.0', description: 'Scheduled task execution -- run agent tasks on cron schedules with retry logic and failure alerts', tools: ['cron_create', 'cron_list', 'cron_delete'], hooks: ['on_session_start'], enabled: true, state: 'enabled' },
+  { name: 'gateway-bridge', version: '1.0.0', description: 'Cross-platform messaging gateway -- connects Hermes to Telegram, Discord, Slack, Signal, Email, SMS, and 8+ other platforms', tools: ['send_message'], hooks: ['on_session_start', 'on_session_end'], enabled: false, state: 'not_enabled' },
 ]
 
 export const tools: WikiTool[] = [
@@ -183,24 +196,24 @@ export const tools: WikiTool[] = [
   { name: 'browser_snapshot', description: 'Take accessibility tree snapshot of the current page', category: 'Browser', params: [] },
   { name: 'browser_click', description: 'Click an element on the page', category: 'Browser', params: [{ name: 'element', type: 'string', required: true, description: 'Element selector or aria ref' }] },
   { name: 'browser_type', description: 'Type text into a focused input', category: 'Browser', params: [{ name: 'text', type: 'string', required: true, description: 'Text to type' }] },
-  { name: 'browser_vision', description: 'Analyze the rendered page with a vision model', category: 'Browser', params: [{ name: 'prompt', type: 'string', required: false, description: 'Analysis prompt' }] },
+  { name: 'browser_vision', description: 'Analyze the rendered page with a vision model', category: 'Browser', params: [{ name: 'prompt', type: 'string', required: false, description: 'Analysis prompt' }], enabled: false },
   // AI & Reasoning
   { name: 'delegate_task', description: 'Spawn an isolated subagent with restricted toolsets and focused prompt', category: 'AI & Reasoning', params: [{ name: 'task', type: 'string', required: true, description: 'Task description' }, { name: 'toolsets', type: 'string', required: false, description: 'Comma-separated toolsets for subagent' }] },
   { name: 'mixture_of_agents', description: 'Multi-layer LLM collaboration for complex reasoning', category: 'AI & Reasoning', params: [{ name: 'prompt', type: 'string', required: true, description: 'The question or task' }] },
-  { name: 'execute_code', description: 'Run Python scripts that call tools via RPC, collapsing multi-step pipelines', category: 'AI & Reasoning', params: [{ name: 'code', type: 'string', required: true, description: 'Python code to execute' }] },
+  { name: 'execute_code', description: 'Run Python scripts that call tools via RPC, collapsing multi-step pipelines', category: 'AI & Reasoning', params: [{ name: 'code', type: 'string', required: true, description: 'Python code to execute' }], enabled: false },
   // Vision & Media
   { name: 'vision_analyze', description: 'Analyze images from URLs or files with custom prompts', category: 'Vision & Media', params: [{ name: 'image_url', type: 'string', required: true, description: 'URL or path to image' }, { name: 'prompt', type: 'string', required: false, description: 'Analysis prompt' }] },
-  { name: 'image_generate', description: 'Generate images using FAL.ai FLUX 2 Pro with upscaling', category: 'Vision & Media', params: [{ name: 'prompt', type: 'string', required: true, description: 'Image description' }, { name: 'upscale', type: 'boolean', required: false, description: 'Apply Clarity Upscaler' }] },
-  { name: 'text_to_speech', description: 'Convert text to speech via Edge TTS, ElevenLabs, OpenAI, or local NeuTTS', category: 'Vision & Media', params: [{ name: 'text', type: 'string', required: true, description: 'Text to speak' }, { name: 'backend', type: 'string', required: false, description: 'edge, elevenlabs, openai, neutts' }] },
+  { name: 'image_generate', description: 'Generate images using FAL.ai FLUX 2 Pro with upscaling', category: 'Vision & Media', params: [{ name: 'prompt', type: 'string', required: true, description: 'Image description' }, { name: 'upscale', type: 'boolean', required: false, description: 'Apply Clarity Upscaler' }], enabled: false },
+  { name: 'text_to_speech', description: 'Convert text to speech via Edge TTS, ElevenLabs, OpenAI, or local NeuTTS', category: 'Vision & Media', params: [{ name: 'text', type: 'string', required: true, description: 'Text to speak' }, { name: 'backend', type: 'string', required: false, description: 'edge, elevenlabs, openai, neutts' }], enabled: false },
   // Memory & Planning
   { name: 'memory', description: 'Persistent file-backed memory injected into system prompt each session', category: 'Memory & Planning', params: [{ name: 'action', type: 'string', required: true, description: 'add, replace, remove, or read' }, { name: 'content', type: 'string', required: false, description: 'Content to write' }] },
   { name: 'session_search', description: 'FTS5 search over past session transcripts with LLM summarization', category: 'Memory & Planning', params: [{ name: 'query', type: 'string', required: true, description: 'Search query' }, { name: 'limit', type: 'integer', required: false, description: 'Max results' }] },
   { name: 'todo', description: 'In-memory task list for multi-step decomposition, persistent across compression', category: 'Memory & Planning', params: [{ name: 'action', type: 'string', required: true, description: 'add, complete, remove, or list' }, { name: 'task', type: 'string', required: false, description: 'Task description' }] },
   // Smart Home
-  { name: 'ha_call_service', description: 'Execute Home Assistant service calls (turn_on, set_temperature, etc.)', category: 'Smart Home', params: [{ name: 'domain', type: 'string', required: true, description: 'Service domain (light, climate, etc.)' }, { name: 'service', type: 'string', required: true, description: 'Service name' }, { name: 'entity_id', type: 'string', required: true, description: 'Target entity' }] },
-  { name: 'ha_get_state', description: 'Get detailed state of a Home Assistant device', category: 'Smart Home', params: [{ name: 'entity_id', type: 'string', required: true, description: 'Entity to query' }] },
+  { name: 'ha_call_service', description: 'Execute Home Assistant service calls (turn_on, set_temperature, etc.)', category: 'Smart Home', params: [{ name: 'domain', type: 'string', required: true, description: 'Service domain (light, climate, etc.)' }, { name: 'service', type: 'string', required: true, description: 'Service name' }, { name: 'entity_id', type: 'string', required: true, description: 'Target entity' }], enabled: false },
+  { name: 'ha_get_state', description: 'Get detailed state of a Home Assistant device', category: 'Smart Home', params: [{ name: 'entity_id', type: 'string', required: true, description: 'Entity to query' }], enabled: false },
   // Messaging
-  { name: 'send_message', description: 'Send messages across Telegram, Discord, Slack, Signal, Email, SMS, and more', category: 'Messaging', params: [{ name: 'platform', type: 'string', required: true, description: 'Target platform' }, { name: 'recipient', type: 'string', required: true, description: 'Channel, user, or address' }, { name: 'message', type: 'string', required: true, description: 'Message content' }] },
+  { name: 'send_message', description: 'Send messages across Telegram, Discord, Slack, Signal, Email, SMS, and more', category: 'Messaging', params: [{ name: 'platform', type: 'string', required: true, description: 'Target platform' }, { name: 'recipient', type: 'string', required: true, description: 'Channel, user, or address' }, { name: 'message', type: 'string', required: true, description: 'Message content' }], enabled: false },
   // Scheduling
   { name: 'cronjob', description: 'Create and manage scheduled tasks with natural language schedules', category: 'Scheduling', params: [{ name: 'action', type: 'string', required: true, description: 'create, list, update, pause, resume, remove, trigger' }, { name: 'schedule', type: 'string', required: false, description: 'Cron expression or natural language' }, { name: 'task', type: 'string', required: false, description: 'Task to execute' }] },
 ]

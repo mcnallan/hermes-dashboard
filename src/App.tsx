@@ -58,41 +58,41 @@ export default function App() {
   const chatAgent = chatAgentId
     ? agents.find(a => a.sessionId === chatAgentId) || selectedAgent
     : null
+  const chatAgentSessionId = chatAgent?.sessionId
+  const chatAgentTranscript = chatAgent?.transcript
 
   useEffect(() => {
-    if (!chatAgent) {
-      setChatTranscript(null)
-      return
-    }
+    if (!chatAgentSessionId) return
 
     let cancelled = false
-    const fallback = chatAgent.transcript || []
 
     if (isMockData) {
-      setChatTranscript({ sessionId: chatAgent.sessionId, entries: fallback })
+      Promise.resolve().then(() => {
+        if (cancelled) return
+        setChatTranscript({ sessionId: chatAgentSessionId, entries: chatAgentTranscript ?? [] })
+      })
       return () => { cancelled = true }
     }
 
-    setChatTranscript(null)
-    getSessionTranscript(chatAgent.sessionId)
+    getSessionTranscript(chatAgentSessionId)
       .then(entries => {
         if (cancelled) return
         setChatTranscript({
-          sessionId: chatAgent.sessionId,
-          entries: entries.length > 0 ? entries : fallback,
+          sessionId: chatAgentSessionId,
+          entries: entries.length > 0 ? entries : (chatAgentTranscript ?? []),
         })
       })
       .catch(err => {
         if (cancelled) return
         setChatTranscript({
-          sessionId: chatAgent.sessionId,
-          entries: fallback,
+          sessionId: chatAgentSessionId,
+          entries: chatAgentTranscript ?? [],
           error: err instanceof Error ? err.message : 'transcript failed',
         })
       })
 
     return () => { cancelled = true }
-  }, [chatAgent?.sessionId, getSessionTranscript, isMockData])
+  }, [chatAgentSessionId, chatAgentTranscript, getSessionTranscript, isMockData])
 
   if (view === 'wiki') {
     return (
