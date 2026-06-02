@@ -1101,12 +1101,8 @@ function readSafe(path: string): string {
 
 function parseFrontmatter(content: string) {
   const m = content.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/)
-  if (!m) return { meta: {} as Record<string, string>, body: content }
-  const meta: Record<string, string> = {}
-  for (const line of m[1].split('\n')) {
-    const i = line.indexOf(':')
-    if (i > 0) meta[line.slice(0, i).trim()] = line.slice(i + 1).trim()
-  }
+  if (!m) return { meta: {} as Record<string, unknown>, body: content }
+  const meta = parseYaml(m[1])
   return { meta, body: m[2] }
 }
 
@@ -1148,6 +1144,33 @@ function skillDisabledNames(config: Record<string, unknown>): Set<string> {
   return new Set(toStringList(disabled))
 }
 
+function skillPlatformNames(value: unknown): string[] {
+  if (!value) return []
+  if (Array.isArray(value)) return value.map(v => String(v).toLowerCase().trim()).filter(Boolean)
+  return String(value)
+    .replace(/[[\]]/g, '')
+    .split(',')
+    .map(v => v.toLowerCase().trim())
+    .filter(Boolean)
+}
+
+function skillMatchesPlatform(meta: Record<string, unknown>): boolean {
+  const platforms = skillPlatformNames(meta.platforms)
+  if (platforms.length === 0) return true
+  const platformMap: Record<string, string> = {
+    macos: 'darwin',
+    linux: 'linux',
+    windows: 'win32',
+  }
+  return platforms.some(platform => process.platform.startsWith(platformMap[platform] || platform))
+}
+
+function skillState(meta: Record<string, unknown>, disabledNames: Set<string>, name: string): 'enabled' | 'disabled' | 'unsupported' {
+  if (disabledNames.has(name)) return 'disabled'
+  if (!skillMatchesPlatform(meta)) return 'unsupported'
+  return 'enabled'
+}
+
 function pluginStateSets(config: Record<string, unknown>) {
   const pluginsCfg = config.plugins && typeof config.plugins === 'object' && !Array.isArray(config.plugins)
     ? config.plugins as Record<string, unknown>
@@ -1171,7 +1194,8 @@ function scanSkills() {
     if (existsSync(skillMd)) {
       const { meta, body } = parseFrontmatter(readSafe(skillMd))
       const name = String(meta.name || entry)
-      results.push({ name, category: '', ...meta, body, enabled: !disabledNames.has(name) })
+      const state = skillState(meta, disabledNames, name)
+      results.push({ name, category: '', ...meta, body, enabled: state === 'enabled', state })
       continue
     }
     // category dir
@@ -1182,7 +1206,8 @@ function scanSkills() {
       if (existsSync(sm)) {
         const { meta, body } = parseFrontmatter(readSafe(sm))
         const name = String(meta.name || sub)
-        results.push({ name, category: entry, ...meta, body, enabled: !disabledNames.has(name) })
+        const state = skillState(meta, disabledNames, name)
+        results.push({ name, category: entry, ...meta, body, enabled: state === 'enabled', state })
       }
     }
   }
