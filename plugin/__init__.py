@@ -9,7 +9,6 @@ Install:
   cd hermes-dashboard && ./install.sh
 
 Dashboard: http://localhost:5173
-Wiki API:  http://localhost:3002/api/wiki
 """
 
 import json
@@ -31,7 +30,7 @@ logger = logging.getLogger(__name__)
 SOCKET_PATH = "/tmp/hermes-dashboard.sock"
 APPROVAL_SOCKET_PATH = "/tmp/hermes-dashboard-approval.sock"
 CHAT_SOCKET_PATH = os.environ.get("HERMES_DASHBOARD_CHAT_SOCKET_PATH") or f"/tmp/hermes-dashboard-chat-{os.getpid()}.sock"
-WEBHOOK_URL = os.environ.get("HERMES_DASHBOARD_WEBHOOK_URL", "http://127.0.0.1:3002/api/webhook")
+WEBHOOK_URL = os.environ.get("HERMES_DASHBOARD_WEBHOOK_URL", "")
 AGENT_NAME = os.environ.get("HERMES_AGENT_NAME", "agent")
 _TOOL_CALL_IDS = defaultdict(list)
 _CURRENT_SESSION_ID = None
@@ -93,20 +92,6 @@ def _base_payload(event_name, session_id, status, **extra):
 def _send(payload):
     data = json.dumps(payload).encode("utf-8")
     try:
-        req = request.Request(
-            WEBHOOK_URL,
-            data=data,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        request.urlopen(req, timeout=1.0).close()
-        return True
-    except (URLError, TimeoutError, OSError):
-        pass
-    except Exception as exc:
-        logger.debug("hermes-dashboard: webhook send failed: %s", exc)
-
-    try:
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         sock.settimeout(1.0)
         sock.connect(SOCKET_PATH)
@@ -117,6 +102,21 @@ def _send(payload):
         pass
     except Exception as exc:
         logger.debug("hermes-dashboard: send failed: %s", exc)
+
+    if WEBHOOK_URL:
+        try:
+            req = request.Request(
+                WEBHOOK_URL,
+                data=data,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            request.urlopen(req, timeout=1.0).close()
+            return True
+        except (URLError, TimeoutError, OSError):
+            pass
+        except Exception as exc:
+            logger.debug("hermes-dashboard: webhook send failed: %s", exc)
     return False
 
 

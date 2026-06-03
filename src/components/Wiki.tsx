@@ -7,10 +7,7 @@ import {
   type WikiPlugin, type WikiSkill, type WikiTool,
 } from '../wikiData'
 
-const API_HOST = window.location.hostname === 'localhost'
-  ? '127.0.0.1'
-  : (window.location.hostname || '127.0.0.1')
-const API = `http://${API_HOST}:3002/api/wiki`
+const API = '/api/wiki'
 
 type Page =
   | 'skills' | 'plugins' | 'tools'

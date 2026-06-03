@@ -1,11 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { type Agent, type ActivityEvent, type ChatEntry, agents as mockAgents, activityFeed as mockFeed } from './data'
 
-const HOST = window.location.hostname === 'localhost'
-  ? '127.0.0.1'
-  : (window.location.hostname || '127.0.0.1')
-const WS_URL = `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${HOST}:3001`
-const API_URL = `http://${HOST}:3002`
+const WS_URL = `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/ws`
+const API_URL = ''
 const RECONNECT_MS = 2000
 const USE_MOCK_DATA = import.meta.env.VITE_HERMES_USE_MOCK_DATA !== 'false'
 

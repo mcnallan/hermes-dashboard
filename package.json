@@ -4,7 +4,7 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "concurrently -n server,vite -c blue,green \"tsx server/index.ts\" \"vite\"",
+    "dev": "VITE_HERMES_USE_MOCK_DATA=false npm run build && tsx server/index.ts",
     "dev:ui": "vite",
     "dev:server": "tsx server/index.ts",
     "build": "tsc -b && vite build",

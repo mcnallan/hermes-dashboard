@@ -2,7 +2,7 @@ import { createConnection, createServer as createNetServer, type Socket } from '
 import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from 'http'
 import { WebSocketServer, WebSocket } from 'ws'
 import { unlinkSync, existsSync, readFileSync, readdirSync, statSync, realpathSync } from 'fs'
-import { join } from 'path'
+import { extname, join, resolve } from 'path'
 import { homedir } from 'os'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
@@ -11,13 +11,27 @@ import { load as yamlLoad } from 'js-yaml'
 const SOCKET_PATH = '/tmp/hermes-dashboard.sock'
 const APPROVAL_SOCKET_PATH = '/tmp/hermes-dashboard-approval.sock'
 const DEFAULT_CHAT_SOCKET_PATH = '/tmp/hermes-dashboard-chat.sock'
-const WS_PORT = 3001
-const HTTP_PORT = 3002
+const DASHBOARD_HOST = process.env.HERMES_DASHBOARD_HOST || process.env.HERMES_DASHBOARD_UI_HOST || '0.0.0.0'
+const DASHBOARD_PORT = Number.parseInt(process.env.HERMES_DASHBOARD_PORT || process.env.HERMES_DASHBOARD_UI_PORT || '5173', 10)
+const DASHBOARD_DIR = process.env.HERMES_DASHBOARD_DIR || process.cwd()
+const DIST_DIR = resolve(DASHBOARD_DIR, 'dist')
 const HERMES_HOME = process.env.HERMES_HOME || join(homedir(), '.hermes')
 const MAX_WEBHOOK_BYTES = 1_000_000
 const MAX_APPROVAL_BYTES = 20_000
 const MAX_CHAT_BYTES = 100_000
 const execFileAsync = promisify(execFile)
+const CONTENT_TYPES: Record<string, string> = {
+  '.css': 'text/css; charset=utf-8',
+  '.html': 'text/html; charset=utf-8',
+  '.ico': 'image/x-icon',
+  '.js': 'text/javascript; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.map': 'application/json; charset=utf-8',
+  '.png': 'image/png',
+  '.svg': 'image/svg+xml',
+  '.txt': 'text/plain; charset=utf-8',
+  '.webp': 'image/webp',
+}
 
 // =========================================================================
 // Dashboard state
@@ -1091,7 +1105,6 @@ function serializeState(): string {
 
 function readSafe(path: string): string {
   try {
-    // resolve symlinks and verify the real path is within HERMES_HOME
     const real = realpathSync(path)
     const hermesReal = realpathSync(HERMES_HOME)
     if (!real.startsWith(hermesReal)) return ''
@@ -1198,7 +1211,6 @@ function scanSkills() {
       results.push({ name, category: '', ...meta, body, enabled: state === 'enabled', state })
       continue
     }
-    // category dir
     for (const sub of readdirSync(p)) {
       const sp = join(p, sub)
       if (!statSync(sp).isDirectory()) continue
@@ -1281,30 +1293,84 @@ function wikiHandler(url: string): unknown {
 }
 
 // =========================================================================
-// HTTP server
+// Integrated dashboard HTTP + WebSocket server
 // =========================================================================
 
-const ALLOWED_ORIGINS = ['http://localhost:5173', 'http://127.0.0.1:5173']
+function configuredOrigins(): Set<string> {
+  return new Set(
+    (process.env.HERMES_DASHBOARD_ALLOWED_ORIGINS || '')
+      .split(',')
+      .map(origin => origin.trim())
+      .filter(Boolean),
+  )
+}
 
-const httpServer = createHttpServer(async (req: IncomingMessage, res: ServerResponse) => {
-  const origin = req.headers.origin || ''
-  if (ALLOWED_ORIGINS.includes(origin)) {
+function requestOrigins(req: IncomingMessage): Set<string> {
+  const host = String(req.headers['x-forwarded-host'] || req.headers.host || '').split(',')[0]?.trim()
+  const proto = String(req.headers['x-forwarded-proto'] || '').split(',')[0]?.trim() || 'http'
+  const origins = configuredOrigins()
+  if (host) {
+    origins.add(`http://${host}`)
+    origins.add(`https://${host}`)
+    origins.add(`${proto}://${host}`)
+  }
+  return origins
+}
+
+function originAllowed(req: IncomingMessage, origin?: string): boolean {
+  if (!origin) return true
+  return requestOrigins(req).has(origin)
+}
+
+function setCors(req: IncomingMessage, res: ServerResponse) {
+  const origin = req.headers.origin
+  if (typeof origin === 'string' && originAllowed(req, origin)) {
     res.setHeader('Access-Control-Allow-Origin', origin)
+    res.setHeader('Vary', 'Origin')
   }
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
+}
+
+function sendStatic(res: ServerResponse, path: string) {
+  const ext = extname(path)
+  const isHtml = path.endsWith('index.html')
+  res.statusCode = 200
+  res.setHeader('Content-Type', CONTENT_TYPES[ext] || 'application/octet-stream')
+  res.setHeader('Cache-Control', isHtml ? 'no-cache' : 'public, max-age=31536000, immutable')
+  res.end(readFileSync(path))
+}
+
+function staticAssetPath(url: string): string | null {
+  let pathname = '/'
+  try {
+    pathname = new URL(url, 'http://dashboard.local').pathname
+  } catch {
+    return null
+  }
+  const decoded = decodeURIComponent(pathname)
+  const candidate = resolve(DIST_DIR, `.${decoded === '/' ? '/index.html' : decoded}`)
+  if (candidate !== DIST_DIR && !candidate.startsWith(`${DIST_DIR}/`)) return null
+  try {
+    if (statSync(candidate).isFile()) return candidate
+  } catch { /* use SPA fallback below */ }
+  return join(DIST_DIR, 'index.html')
+}
+
+async function handleApi(req: IncomingMessage, res: ServerResponse, url: string): Promise<boolean> {
   res.setHeader('Content-Type', 'application/json')
-  if (req.method === 'OPTIONS') { res.end(); return }
-  if (req.method !== 'GET' && origin && !ALLOWED_ORIGINS.includes(origin)) {
-    sendJson(res, 403, { error: 'origin not allowed' })
-    return
+  if (await approvalHandler(req, res, url)) return true
+  if (await chatMessageHandler(req, res, url)) return true
+  if (await transcriptHandler(req, res, url)) return true
+
+  if (req.method === 'GET' && url.startsWith('/api/wiki')) {
+    const data = wikiHandler(url)
+    if (data === null) sendJson(res, 404, { error: 'not found' })
+    else res.end(JSON.stringify(data))
+    return true
   }
 
-  if (await approvalHandler(req, res, req.url || '/')) return
-  if (await chatMessageHandler(req, res, req.url || '/')) return
-  if (await transcriptHandler(req, res, req.url || '/')) return
-
-  if (req.method === 'POST' && (req.url === '/api/webhook' || req.url === '/api/events')) {
+  if (req.method === 'POST' && (url === '/api/webhook' || url === '/api/events')) {
     try {
       const count = processWebhookBody(await readJsonBody(req))
       res.end(JSON.stringify({ ok: true, events: count }))
@@ -1312,35 +1378,64 @@ const httpServer = createHttpServer(async (req: IncomingMessage, res: ServerResp
       res.statusCode = err instanceof Error && err.message === 'payload too large' ? 413 : 400
       res.end(JSON.stringify({ ok: false, error: err instanceof Error ? err.message : 'invalid payload' }))
     }
+    return true
+  }
+
+  if (url.startsWith('/api/')) {
+    sendJson(res, 404, { error: 'not found' })
+    return true
+  }
+  return false
+}
+
+const httpServer = createHttpServer(async (req: IncomingMessage, res: ServerResponse) => {
+  const url = req.url || '/'
+  setCors(req, res)
+  if (req.method === 'OPTIONS') { res.end(); return }
+  if (req.method !== 'GET' && !originAllowed(req, req.headers.origin)) {
+    sendJson(res, 403, { error: 'origin not allowed' })
     return
   }
 
+  if (await handleApi(req, res, url)) return
   if (req.method !== 'GET') {
-    res.statusCode = 405
-    res.end(JSON.stringify({ error: 'method not allowed' }))
+    sendJson(res, 405, { error: 'method not allowed' })
     return
   }
 
-  const data = wikiHandler(req.url || '/')
-  if (data === null) { res.statusCode = 404; res.end(JSON.stringify({ error: 'not found' })); return }
-  res.end(JSON.stringify(data))
+  const assetPath = staticAssetPath(url)
+  if (!assetPath) {
+    res.statusCode = 400
+    res.end('bad request\n')
+    return
+  }
+  try {
+    sendStatic(res, assetPath)
+  } catch {
+    res.statusCode = 404
+    res.end('not found\n')
+  }
 })
 
-httpServer.listen(HTTP_PORT, () => console.log(`wiki API on http://localhost:${HTTP_PORT}`))
-
-// =========================================================================
-// WebSocket + Unix socket servers
-// =========================================================================
-
 const wss = new WebSocketServer({
-  port: WS_PORT,
-  verifyClient: ({ origin }: { origin?: string }) => !origin || ALLOWED_ORIGINS.includes(origin),
+  server: httpServer,
+  path: '/ws',
+  verifyClient: ({ origin, req }: { origin?: string, req: IncomingMessage }) => originAllowed(req, origin),
 })
 function broadcast() {
   const data = serializeState()
   for (const client of wss.clients) { if (client.readyState === WebSocket.OPEN) client.send(data) }
 }
 wss.on('connection', (ws) => { console.log('dashboard client connected'); ws.send(serializeState()) })
+
+httpServer.listen(DASHBOARD_PORT, DASHBOARD_HOST, () => {
+  console.log(`dashboard on http://${DASHBOARD_HOST}:${DASHBOARD_PORT}`)
+  console.log(`websocket on ws://${DASHBOARD_HOST}:${DASHBOARD_PORT}/ws`)
+})
+
+// =========================================================================
+// Unix socket event ingestion
+// =========================================================================
 
 if (existsSync(SOCKET_PATH)) unlinkSync(SOCKET_PATH)
 const server = createNetServer((conn: Socket) => {
@@ -1352,7 +1447,7 @@ const server = createNetServer((conn: Socket) => {
     }
   })
 })
-server.listen(SOCKET_PATH, () => { console.log(`listening on ${SOCKET_PATH}`); console.log(`websocket on ws://localhost:${WS_PORT}`) })
+server.listen(SOCKET_PATH, () => { console.log(`listening on ${SOCKET_PATH}`) })
 
 process.on('SIGINT', () => { if (existsSync(SOCKET_PATH)) unlinkSync(SOCKET_PATH); process.exit(0) })
 process.on('SIGTERM', () => { if (existsSync(SOCKET_PATH)) unlinkSync(SOCKET_PATH); process.exit(0) })

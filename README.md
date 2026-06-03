@@ -34,6 +34,11 @@ The plugin auto-registers with Hermes on next session start. Agent events stream
 - Per-session detail: context window visualization, tool execution history, subagent tracking
 - Session timeline and tool usage breakdown
 
+### Control
+- Approve or deny pending agent actions directly from the dashboard
+- Send follow-up chat messages to live sessions
+- View live transcript entries streamed from the running agent
+
 ### Wiki (auto-generated)
 - **Skills** -- all your installed skills parsed from `~/.hermes/skills/`, searchable by name/category
 - **Plugins** -- installed plugins with manifest data from `~/.hermes/plugins/`
@@ -56,12 +61,12 @@ Hermes Agent
 hermes_dashboard plugin (hooks into session lifecycle)
   |
   v
-HTTP webhook (POST /api/webhook)
+Unix socket (/tmp/hermes-dashboard.sock)
   |
   v
 Bridge server (Node.js)
-  ├── WebSocket :3001 --> React dashboard (live updates)
-  └── HTTP :3002 ------> Webhook ingestion + Wiki API (reads ~/.hermes/)
+  ├── HTTP :5173 ------> React dashboard + control API + Wiki API
+  └── WebSocket /ws --> React dashboard live updates
   |
   v
 Browser at localhost:5173
@@ -84,12 +89,13 @@ Browser at localhost:5173
 | `HERMES_HOME` | `~/.hermes` | Hermes installation directory |
 | `HERMES_DASHBOARD_DIR` | auto-detected | Path to this repo (for plugin auto-start) |
 | `HERMES_AGENT_NAME` | `agent` | Agent name shown in dashboard |
-| `HERMES_DASHBOARD_WEBHOOK_URL` | `http://127.0.0.1:3002/api/webhook` | Dashboard event webhook endpoint |
+| `HERMES_DASHBOARD_PORT` | `5173` | Dashboard HTTP/WebSocket port |
+| `HERMES_DASHBOARD_WEBHOOK_URL` | unset | Optional HTTP event webhook endpoint; Unix socket is used by default |
 
 ## Stack
 
 - **Frontend**: React 19, TypeScript, Vite, marked (markdown)
-- **Server**: Node.js, ws (WebSocket), HTTP webhook ingestion, Unix socket fallback
+- **Server**: Node.js, ws (WebSocket), static dashboard serving, Unix socket event ingestion
 - **Plugin**: Python (Hermes hook system)
 - **Styling**: Custom CSS, light/dark themes, monospace typography
 
