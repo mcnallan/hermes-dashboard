@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { type Agent, type ActivityEvent, type ChatEntry, agents as mockAgents, activityFeed as mockFeed } from './data'
+import { appUrl, appWebSocketUrl } from './appUrls'
 
-const WS_URL = `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/ws`
-const API_URL = ''
+const WS_URL = appWebSocketUrl('ws')
 const RECONNECT_MS = 2000
 const USE_MOCK_DATA = import.meta.env.VITE_HERMES_USE_MOCK_DATA !== 'false'
 
@@ -78,7 +78,7 @@ export function useHermes() {
   }, [])
 
   const respondToApproval = useCallback(async function respondToApproval(approvalId: string, decision: 'approve' | 'deny') {
-    const res = await fetch(`${API_URL}/api/approvals/${encodeURIComponent(approvalId)}/respond`, {
+    const res = await fetch(appUrl(`api/approvals/${encodeURIComponent(approvalId)}/respond`), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ decision }),
@@ -94,14 +94,14 @@ export function useHermes() {
   }, [])
 
   const getSessionTranscript = useCallback(async function getSessionTranscript(sessionId: string): Promise<ChatEntry[]> {
-    const res = await fetch(`${API_URL}/api/sessions/${encodeURIComponent(sessionId)}/transcript`)
+    const res = await fetch(appUrl(`api/sessions/${encodeURIComponent(sessionId)}/transcript`))
     if (!res.ok) throw new Error(`transcript request failed (${res.status})`)
     const data = await res.json() as { entries?: WireChatEntry[] }
     return hydrateTranscript(data.entries || [])
   }, [])
 
   const sendSessionMessage = useCallback(async function sendSessionMessage(sessionId: string, message: string) {
-    const res = await fetch(`${API_URL}/api/sessions/${encodeURIComponent(sessionId)}/messages`, {
+    const res = await fetch(appUrl(`api/sessions/${encodeURIComponent(sessionId)}/messages`), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ message }),

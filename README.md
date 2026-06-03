@@ -26,6 +26,47 @@ Open **http://localhost:5173**.
 
 The plugin auto-registers with Hermes on next session start. Agent events stream to the dashboard in real-time.
 
+### Reverse proxy access
+
+If you want to expose the dashboard behind nginx, proxy the dashboard path to the local Vite/bridge server and keep websocket upgrade headers enabled. This example serves the dashboard at `/dev/marvin/`:
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name subdomain.site.com;
+
+    access_log /var/log/nginx/access.log;
+    error_log  /var/log/nginx/error.log;
+
+    ssl_certificate     /etc/nginx/ssl/site.com/fullchain.crt;
+    ssl_certificate_key /etc/nginx/ssl/site.com/private.key;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
+
+    location = /dashboard/name {
+        return 301 /dashboard/name/;
+    }
+
+    location ^~ /dashboard/name/ {
+        proxy_pass http://192.168.1.123:5173/;
+        proxy_http_version 1.1;
+
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+
+        proxy_set_header Upgrade           $http_upgrade;
+        proxy_set_header Connection        "upgrade";
+
+        proxy_read_timeout 120s;
+        proxy_buffering off;
+    }
+}
+```
+
+If you change the public path, make sure the trailing-slash redirect and `proxy_pass` target stay aligned.
+
 ## What you get
 
 ### Dashboard (live)

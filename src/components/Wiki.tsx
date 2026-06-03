@@ -6,8 +6,9 @@ import {
   tools as defaultTools, mockMemory, mockSoul,
   type WikiPlugin, type WikiSkill, type WikiTool,
 } from '../wikiData'
+import { appUrl } from '../appUrls'
 
-const API = '/api/wiki'
+const API = appUrl('api/wiki')
 
 type Page =
   | 'skills' | 'plugins' | 'tools'
