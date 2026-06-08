@@ -16,6 +16,12 @@ This installs the Hermes plugin, npm dependencies, and builds the dashboard.
 
 ## Usage
 
+Preview UI with mock data:
+
+```bash
+npm run dev:ui
+```
+
 Start the dashboard:
 
 ```bash
