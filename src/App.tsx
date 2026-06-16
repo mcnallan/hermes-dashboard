@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { type Agent, type ChatEntry } from './data'
 import { useHermes } from './useHermes'
 import { Header } from './components/Header'
@@ -60,6 +60,11 @@ export default function App() {
     : null
   const chatAgentSessionId = chatAgent?.sessionId
   const chatAgentTranscript = chatAgent?.transcript
+  const chatAgentTranscriptRef = useRef<ChatEntry[] | undefined>(undefined)
+
+  useEffect(() => {
+    chatAgentTranscriptRef.current = chatAgentTranscript
+  }, [chatAgentSessionId, chatAgentTranscript])
 
   useEffect(() => {
     if (!chatAgentSessionId) return
@@ -69,7 +74,7 @@ export default function App() {
     if (isMockData) {
       Promise.resolve().then(() => {
         if (cancelled) return
-        setChatTranscript({ sessionId: chatAgentSessionId, entries: chatAgentTranscript ?? [] })
+        setChatTranscript({ sessionId: chatAgentSessionId, entries: chatAgentTranscriptRef.current ?? [] })
       })
       return () => { cancelled = true }
     }
@@ -79,20 +84,20 @@ export default function App() {
         if (cancelled) return
         setChatTranscript({
           sessionId: chatAgentSessionId,
-          entries: entries.length > 0 ? entries : (chatAgentTranscript ?? []),
+          entries: entries.length > 0 ? entries : (chatAgentTranscriptRef.current ?? []),
         })
       })
       .catch(err => {
         if (cancelled) return
         setChatTranscript({
           sessionId: chatAgentSessionId,
-          entries: chatAgentTranscript ?? [],
+          entries: chatAgentTranscriptRef.current ?? [],
           error: err instanceof Error ? err.message : 'transcript failed',
         })
       })
 
     return () => { cancelled = true }
-  }, [chatAgentSessionId, chatAgentTranscript, getSessionTranscript, isMockData])
+  }, [chatAgentSessionId, getSessionTranscript, isMockData])
 
   if (view === 'wiki') {
     return (

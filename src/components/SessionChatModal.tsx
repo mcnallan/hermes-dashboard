@@ -71,7 +71,7 @@ function mergeTranscriptPair(existing: ChatEntry, incoming: ChatEntry): ChatEntr
 
 function mergeTranscriptEntries(entries: ChatEntry[]) {
   const merged: ChatEntry[] = []
-  for (const entry of entries.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime())) {
+  for (const entry of [...entries].sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime())) {
     const existingIndex = merged.findIndex(candidate => sameTranscriptEntry(candidate, entry))
     if (existingIndex >= 0) {
       merged[existingIndex] = mergeTranscriptPair(merged[existingIndex], entry)
@@ -80,6 +80,30 @@ function mergeTranscriptEntries(entries: ChatEntry[]) {
     }
   }
   return merged
+}
+
+function transcriptEntrySignature(entry: ChatEntry) {
+  return [
+    entry.id,
+    entry.kind,
+    entry.role,
+    entry.timestamp.getTime(),
+    normalizedContent(entry.content),
+    entry.toolCallId || '',
+    entry.toolName || '',
+    renderUnknown(entry.toolInput),
+    entry.toolStatus || '',
+    entry.reasoning || '',
+    renderUnknown(entry.reasoningDetails),
+  ].join('\u001f')
+}
+
+function transcriptSignature(entries: ChatEntry[]) {
+  return entries.map(transcriptEntrySignature).join('\u001e')
+}
+
+function sameTranscriptEntries(a: ChatEntry[], b: ChatEntry[]) {
+  return a.length === b.length && transcriptSignature(a) === transcriptSignature(b)
 }
 
 function ReasoningFold({ entry }: { entry: ChatEntry }) {
@@ -337,21 +361,29 @@ export function SessionChatModal({
   const resizeTimerRef = useRef<ReturnType<typeof window.setTimeout> | null>(null)
   const streamTimersRef = useRef<Array<ReturnType<typeof window.setTimeout>>>([])
   const stickToBottomRef = useRef(true)
+  const initialTranscriptRef = useRef(initialTranscript)
+  const initialTranscriptSignature = transcriptSignature(initialTranscript)
   const canSend = agent.phase !== 'ended'
+
+  useEffect(() => {
+    initialTranscriptRef.current = initialTranscript
+  }, [initialTranscript])
 
   useEffect(() => {
     setLoading(false)
     setError(initialTranscriptError || '')
     initialScrollSessionRef.current = null
     stickToBottomRef.current = true
-    setEntries(mergeTranscriptEntries(initialTranscript))
-  }, [agent.sessionId, initialTranscript, initialTranscriptError])
+    const nextEntries = mergeTranscriptEntries(initialTranscriptRef.current)
+    setEntries(prev => sameTranscriptEntries(prev, nextEntries) ? prev : nextEntries)
+  }, [agent.sessionId, initialTranscriptSignature, initialTranscriptError])
 
   useEffect(() => {
     const live = agent.transcript || []
     if (live.length === 0) return
     setEntries(prev => {
-      return mergeTranscriptEntries([...prev, ...live])
+      const nextEntries = mergeTranscriptEntries([...prev, ...live])
+      return sameTranscriptEntries(prev, nextEntries) ? prev : nextEntries
     })
   }, [agent.transcript])
 
