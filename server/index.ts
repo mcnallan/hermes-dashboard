@@ -131,6 +131,7 @@ const sessions = new Map<string, Session>()
 const activity: ActivityEntry[] = []
 const approvalSessions = new Map<string, string>()
 const sessionKeys = new Map<string, string>()
+const responseStoreFirstMessages = new Map<string, string>()
 let counter = 0
 
 function emptyUsage(): UsageState {
@@ -238,6 +239,81 @@ function usageFromPayload(value: unknown): UsageState {
     apiCallCount: numberValue(u.api_call_count ?? u.apiCallCount),
     estimatedCostUsd: numberValue(u.estimated_cost_usd ?? u.estimatedCostUsd),
   }
+}
+
+function mergeUsage(items: Session[]): UsageState {
+  return items.reduce((total, s) => ({
+    inputTokens: total.inputTokens + s.usage.inputTokens,
+    outputTokens: total.outputTokens + s.usage.outputTokens,
+    cacheReadTokens: total.cacheReadTokens + s.usage.cacheReadTokens,
+    cacheWriteTokens: total.cacheWriteTokens + s.usage.cacheWriteTokens,
+    reasoningTokens: total.reasoningTokens + s.usage.reasoningTokens,
+    promptTokens: total.promptTokens + s.usage.promptTokens,
+    totalTokens: total.totalTokens + s.usage.totalTokens,
+    apiCallCount: total.apiCallCount + s.usage.apiCallCount,
+    estimatedCostUsd: total.estimatedCostUsd + s.usage.estimatedCostUsd,
+  }), emptyUsage())
+}
+
+function normalizedThreadTitle(value: string): string {
+  return value.trim().replace(/\s+/g, ' ').slice(0, 240).toLowerCase()
+}
+
+function stableThreadMessage(s: Session): string {
+  return responseStoreFirstMessages.get(s.sessionId) || s.firstUserMessage || ''
+}
+
+function visibleSessions(): Session[] {
+  const groups = new Map<string, Session[]>()
+  for (const session of sessions.values()) {
+    const first = stableThreadMessage(session)
+    const key = first ? `first:${normalizedThreadTitle(first)}` : `session:${session.sessionId}`
+    const list = groups.get(key) || []
+    list.push(session)
+    groups.set(key, list)
+  }
+
+  return Array.from(groups.values()).map(group => {
+    if (group.length === 1) {
+      const first = stableThreadMessage(group[0])
+      if (first && !group[0].firstUserMessage) group[0].firstUserMessage = first
+      return group[0]
+    }
+
+    const sorted = [...group].sort((a, b) => b.lastActivity.getTime() - a.lastActivity.getTime())
+    const latest = sorted[0]
+    const firstMessage = stableThreadMessage(latest) || stableThreadMessage(sorted[sorted.length - 1])
+    const mergedToolsInProgress = new Map<string, ToolEntry>()
+    const mergedApprovals = new Map<string, PendingApproval>()
+    const filesModified = new Set<string>()
+    const recentTools: ToolEntry[] = []
+    const transcript: ChatEntry[] = []
+
+    for (const session of group) {
+      for (const [id, tool] of session.toolsInProgress) mergedToolsInProgress.set(`${session.sessionId}:${id}`, tool)
+      for (const [id, approval] of session.pendingApprovals) mergedApprovals.set(id, approval)
+      for (const file of session.filesModified) filesModified.add(file)
+      recentTools.push(...session.recentTools)
+      transcript.push(...session.transcript)
+    }
+
+    recentTools.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime())
+    transcript.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime())
+
+    return {
+      ...latest,
+      firstUserMessage: firstMessage || latest.firstUserMessage,
+      createdAt: new Date(Math.min(...group.map(s => s.createdAt.getTime()))),
+      lastActivity: new Date(Math.max(...group.map(s => s.lastActivity.getTime()))),
+      turnCount: group.reduce((sum, s) => sum + s.turnCount, 0),
+      usage: mergeUsage(group),
+      toolsInProgress: mergedToolsInProgress,
+      pendingApprovals: mergedApprovals,
+      filesModified,
+      recentTools: recentTools.slice(-30),
+      transcript,
+    }
+  })
 }
 
 function applyUsageEvent(s: Session, payload: Record<string, unknown>) {
@@ -797,6 +873,58 @@ finally:
   }
 }
 
+async function refreshResponseStoreFirstMessages(): Promise<void> {
+  const code = String.raw`
+import json, os, sqlite3
+from pathlib import Path
+
+home = Path(os.environ.get("HERMES_HOME") or str(Path.home() / ".hermes"))
+db_path = home / "response_store.db"
+if not db_path.exists():
+    print("{}")
+    raise SystemExit(0)
+
+result = {}
+conn = sqlite3.connect(str(db_path))
+try:
+    rows = conn.execute(
+        "SELECT data FROM responses ORDER BY accessed_at DESC LIMIT 250"
+    ).fetchall()
+    for (raw,) in rows:
+        try:
+            data = json.loads(raw)
+        except Exception:
+            continue
+        sid = str(data.get("session_id") or "")
+        if not sid or sid in result:
+            continue
+        for msg in data.get("conversation_history") or []:
+            if not isinstance(msg, dict) or msg.get("role") != "user":
+                continue
+            content = msg.get("content")
+            if isinstance(content, str) and content.strip():
+                result[sid] = content.strip()
+                break
+finally:
+    conn.close()
+
+print(json.dumps(result))
+`
+
+  try {
+    const { stdout } = await execFileAsync('python3', ['-c', code], { timeout: 3000, maxBuffer: 1_000_000 })
+    const parsed = JSON.parse(stdout || '{}') as Record<string, unknown>
+    responseStoreFirstMessages.clear()
+    for (const [sessionId, firstMessage] of Object.entries(parsed)) {
+      if (typeof firstMessage === 'string' && firstMessage.trim()) {
+        responseStoreFirstMessages.set(sessionId, firstMessage.trim())
+      }
+    }
+  } catch (err) {
+    console.warn('response store first-message refresh failed', err)
+  }
+}
+
 async function drainApiSessionChatStream(res: Response) {
   try {
     if (!res.body) return
@@ -1058,7 +1186,7 @@ function displayTitle(s: Session): string {
 }
 
 function serializeState(): string {
-  const agents = Array.from(sessions.values()).map(s => {
+  const agents = visibleSessions().map(s => {
     const approvals = activeApprovals(s)
     const firstApproval = approvals[0]
     return {
@@ -1427,6 +1555,15 @@ function broadcast() {
   for (const client of wss.clients) { if (client.readyState === WebSocket.OPEN) client.send(data) }
 }
 wss.on('connection', (ws) => { console.log('dashboard client connected'); ws.send(serializeState()) })
+
+function scheduleResponseStoreRefresh() {
+  refreshResponseStoreFirstMessages()
+    .then(broadcast)
+    .catch(() => { /* refresh logs its own failures */ })
+}
+
+scheduleResponseStoreRefresh()
+setInterval(scheduleResponseStoreRefresh, 5000)
 
 httpServer.listen(DASHBOARD_PORT, DASHBOARD_HOST, () => {
   console.log(`dashboard on http://${DASHBOARD_HOST}:${DASHBOARD_PORT}`)
