@@ -25,6 +25,11 @@ function normalizedContent(value: string) {
   return value.trim().replace(/\s+/g, ' ')
 }
 
+function similarNormalizedContent(a: string, b: string) {
+  if (!a || !b) return false
+  return a === b || a.includes(b) || b.includes(a)
+}
+
 function hasReasoning(entry: ChatEntry) {
   return Boolean(
     (entry.reasoning && entry.reasoning.trim()) ||
@@ -35,9 +40,14 @@ function hasReasoning(entry: ChatEntry) {
 function sameTranscriptEntry(a: ChatEntry, b: ChatEntry) {
   if (a.id && b.id && a.id === b.id) return true
   if (a.kind !== b.kind || a.role !== b.role) return false
-  if (a.toolCallId && b.toolCallId) return a.toolCallId === b.toolCallId
   if ((a.kind === 'tool_call' || a.kind === 'tool_result') && a.toolName && b.toolName) {
-    return a.toolName === b.toolName && normalizedContent(a.content) === normalizedContent(b.content)
+    if (a.toolName !== b.toolName) return false
+    if (a.toolCallId && b.toolCallId && a.toolCallId === b.toolCallId) return true
+    const aContent = normalizedContent(a.content)
+    const bContent = normalizedContent(b.content)
+    const aInput = normalizedContent(renderUnknown(a.toolInput))
+    const bInput = normalizedContent(renderUnknown(b.toolInput))
+    return similarNormalizedContent(aContent, bContent) || similarNormalizedContent(aInput, bInput)
   }
   if (a.kind !== 'message') return false
   const withinSameTurn = Math.abs(a.timestamp.getTime() - b.timestamp.getTime()) < 5 * 60_000
