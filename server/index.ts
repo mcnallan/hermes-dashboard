@@ -878,14 +878,26 @@ async function refreshResponseStoreFirstMessages(): Promise<void> {
 import json, os, sqlite3
 from pathlib import Path
 
-home = Path(os.environ.get("HERMES_HOME") or str(Path.home() / ".hermes"))
-db_path = home / "response_store.db"
-if not db_path.exists():
+homes = []
+for raw in [os.environ.get("HERMES_HOME"), "/sandbox/.hermes", str(Path.home() / ".hermes")]:
+    if raw:
+        path = Path(raw)
+        if path not in homes:
+            homes.append(path)
+
+db_path = None
+for home in homes:
+    candidate = home / "response_store.db"
+    if candidate.exists():
+        db_path = candidate
+        break
+
+if db_path is None:
     print("{}")
     raise SystemExit(0)
 
 result = {}
-conn = sqlite3.connect(str(db_path))
+conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
 try:
     rows = conn.execute(
         "SELECT data FROM responses ORDER BY accessed_at DESC LIMIT 250"
