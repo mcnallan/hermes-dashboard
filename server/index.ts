@@ -466,9 +466,12 @@ function activeApprovals(s: Session): PendingApproval[] {
 }
 
 function sessionIdForApprovalRequest(incomingId: string, payload: Record<string, unknown>): string {
+  if (incomingId && sessions.has(incomingId)) return incomingId
+  const related = relatedRealSession(incomingId, payload)
+  if (related) return related.sessionId
   const key = typeof payload.session_key === 'string' ? payload.session_key.trim() : ''
   if (key) return sessionKeys.get(key) || incomingId
-  return relatedRealSession(incomingId, payload)?.sessionId || incomingId
+  return incomingId
 }
 
 function processEvent(payload: Record<string, unknown>) {

@@ -200,11 +200,11 @@ def _dashboard_session_id(session_key="", task_id="", kwargs=None):
         return session_id
     if task_id and _TASK_SESSION_IDS.get(task_id):
         return _TASK_SESSION_IDS[task_id]
-    if session_key:
-        return session_key
     active = _active_session_id()
     if active:
         return active
+    if session_key:
+        return session_key
     return task_id or ""
 
 
