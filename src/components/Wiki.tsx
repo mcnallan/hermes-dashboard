@@ -190,8 +190,8 @@ export function Wiki({ onBack }: { onBack: () => void }) {
 
   // resolve live vs mock
   const isLive = data.live
-  const skills = (isLive && data.skills.length > 0 ? data.skills : mockSkills).map(s => ({ ...s, enabled: typeof s.enabled === 'boolean' ? s.enabled : true })) as WikiSkill[]
-  const pluginList = (isLive && data.plugins.length > 0 ? data.plugins : mockPlugins).map(p => ({ ...p })) as WikiPlugin[]
+  const skills = (isLive ? data.skills : mockSkills).map(s => ({ ...s, enabled: typeof s.enabled === 'boolean' ? s.enabled : true })) as WikiSkill[]
+  const pluginList = (isLive ? data.plugins : mockPlugins).map(p => ({ ...p })) as WikiPlugin[]
   const enabledToolsets = new Set(data.toolsets?.enabled || [])
   const tools = defaultTools.map(tool => {
     const toolset = toolToolset(tool)

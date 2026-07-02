@@ -20,6 +20,7 @@ import sys
 import threading
 import time
 import uuid
+import inspect
 from urllib import request
 from urllib.error import URLError
 from collections import defaultdict
@@ -317,6 +318,81 @@ def _record_session_usage(session_id, usage, cost_usd=None):
         if cost_usd is not None:
             totals["estimated_cost_usd"] += cost_usd
         return dict(totals)
+
+
+def _context_usage_from_agent(agent):
+    compressor = getattr(agent, "context_compressor", None)
+    if compressor is None:
+        return {}
+
+    prompt_tokens = _as_int(getattr(compressor, "last_prompt_tokens", 0), 0)
+    if prompt_tokens < 0:
+        prompt_tokens = 0
+    context_length = _as_int(getattr(compressor, "context_length", 0), 0)
+    threshold_tokens = _as_int(getattr(compressor, "threshold_tokens", 0), 0)
+
+    data = {}
+    if prompt_tokens >= 0:
+        data["prompt_tokens"] = prompt_tokens
+    if context_length > 0:
+        data["context_length"] = context_length
+    if threshold_tokens > 0:
+        data["threshold_tokens"] = threshold_tokens
+    if context_length > 0:
+        data["usage_percent"] = max(0.0, min(100.0, (prompt_tokens / context_length) * 100.0))
+    return data
+
+
+def _live_context_usage(session_id=""):
+    try:
+        cli = _PLUGIN_CONTEXT._manager._cli_ref if _PLUGIN_CONTEXT is not None else None
+        agent = getattr(cli, "agent", None)
+        if agent is not None and (not session_id or getattr(agent, "session_id", "") == session_id):
+            data = _context_usage_from_agent(agent)
+            if data:
+                return data
+    except Exception:
+        pass
+
+    frame = inspect.currentframe()
+    try:
+        frame = frame.f_back if frame is not None else None
+        while frame is not None:
+            agent = frame.f_locals.get("agent")
+            if agent is not None and (not session_id or getattr(agent, "session_id", "") == session_id):
+                data = _context_usage_from_agent(agent)
+                if data:
+                    return data
+            frame = frame.f_back
+    except Exception as exc:
+        logger.debug("hermes-dashboard: live context lookup failed: %s", exc)
+    finally:
+        del frame
+    return {}
+
+
+def _normal_context_usage(value, fallback_prompt_tokens=0):
+    data = value if isinstance(value, dict) else {}
+    context_usage = {}
+
+    prompt_tokens = _as_int(
+        data.get("prompt_tokens", data.get("promptTokens", data.get("last_prompt_tokens", data.get("lastPromptTokens")))),
+        fallback_prompt_tokens,
+    )
+    context_length = _as_int(data.get("context_length", data.get("contextLength")), 0)
+    threshold_tokens = _as_int(data.get("threshold_tokens", data.get("thresholdTokens")), 0)
+    usage_percent = _as_float(data.get("usage_percent", data.get("usagePercent")), -1.0)
+
+    if prompt_tokens >= 0:
+        context_usage["prompt_tokens"] = prompt_tokens
+    if context_length > 0:
+        context_usage["context_length"] = context_length
+    if threshold_tokens > 0:
+        context_usage["threshold_tokens"] = threshold_tokens
+    if usage_percent >= 0:
+        context_usage["usage_percent"] = usage_percent
+
+    return context_usage
 
 
 def _current_session_key():
@@ -835,6 +911,8 @@ def _on_post_api_request(session_id="", task_id="", model="", provider="", base_
         cost_usd = estimated if estimated is not None else None
 
     session_usage = _record_session_usage(session_id, usage_summary, cost_usd)
+    live_context_usage = kwargs.get("context_usage") or _live_context_usage(session_id)
+    context_usage = _normal_context_usage(live_context_usage, usage_summary["prompt_tokens"])
     _send(_base_payload(
         "LlmUsage",
         session_id,
@@ -849,6 +927,7 @@ def _on_post_api_request(session_id="", task_id="", model="", provider="", base_
         api_duration=_as_float(kwargs.get("api_duration"), 0.0),
         usage=usage_summary,
         session_usage=session_usage,
+        context_usage=context_usage,
         estimated_cost_usd=cost_usd,
     ))
 

@@ -34,7 +34,8 @@ function MiniBar({ agent }: { agent: Agent }) {
   )
 }
 
-function ContextMini({ used, max }: { used: number; max: number }) {
+function ContextMini({ used, max }: { used: number; max?: number }) {
+  if (!max || max <= 0) return null
   const pct = Math.min(used / max, 1)
   const totalSegs = 8
   const filled = Math.round(pct * totalSegs)

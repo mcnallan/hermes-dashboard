@@ -18,7 +18,14 @@ interface Props {
   onApprovalDecision: (approvalId: string, decision: 'approve' | 'deny') => Promise<void>
 }
 
-function ContextRing({ used, max }: { used: number; max: number }) {
+function ContextRing({ used, max }: { used: number; max?: number }) {
+  if (!max || max <= 0) {
+    return (
+      <div className="context-ring-wrap">
+        <span className="context-ring-label">--</span>
+      </div>
+    )
+  }
   const pct = Math.min(used / max, 1)
   const r = 32
   const circumference = 2 * Math.PI * r
@@ -43,7 +50,8 @@ function ContextRing({ used, max }: { used: number; max: number }) {
 
 function ContextBar({ agent }: { agent: Agent }) {
   const used = agent.contextTokenCount ?? agent.tokenCount
-  const pct = used / agent.maxTokens
+  const max = agent.maxTokens
+  const pct = max && max > 0 ? used / max : 0
   const totalSegments = 24
   const filled = Math.round(pct * totalSegments)
   const color = pct > 0.8 ? 'var(--accent)' : pct > 0.5 ? 'var(--warning)' : 'var(--text-display)'
@@ -52,7 +60,7 @@ function ContextBar({ agent }: { agent: Agent }) {
     <div className="context-bar">
       <div className="context-bar-header">
         <span className="context-bar-label">CONTEXT WINDOW</span>
-        <span className="context-bar-value">{formatTokens(used)} / {formatTokens(agent.maxTokens)}</span>
+        <span className="context-bar-value">{formatTokens(used)} / {max && max > 0 ? formatTokens(max) : 'unknown'}</span>
       </div>
       <div className="context-segments">
         {Array.from({ length: totalSegments }).map((_, i) => (

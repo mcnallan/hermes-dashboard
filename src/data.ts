@@ -71,7 +71,7 @@ export interface Agent {
   apiCallCount?: number
   model?: string
   provider?: string
-  maxTokens: number
+  maxTokens?: number
   turnCount: number
   filesModified: number
   linesChanged: number
